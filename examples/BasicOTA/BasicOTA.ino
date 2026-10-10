@@ -50,6 +50,7 @@ void setup() {
     ota.setVersionLabel(FIRMWARE_VERSION);
 
     // TLS is verified by default against the bundled ISRG Root X1 root CA.
+    // Call ota.setCACert(nullptr) to disable verification (development only).
 }
 
 void loop() {
@@ -58,8 +59,10 @@ void loop() {
     }
 
     // If the previous OTA armed a trial, this confirms the running image.
-    // Polling mode calls this on every pass. It is a no-op when no trial
-    // is in progress. A trial that never reaches this call rolls back after
+    // Place it where you are confident the application is working (after
+    // sensors are initialized, a first message is exchanged with your
+    // service, and so on). It is a no-op when no trial is in progress. A
+    // trial that never reaches this call rolls back after
     // SIMPLEOTA_CONFIRM_TIMEOUT_S (default 300s).
     ota.confirmRunning();
 

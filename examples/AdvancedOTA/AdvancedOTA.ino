@@ -57,7 +57,8 @@ void setup() {
     connectWiFi();
 
     // Confirm a prior trial install (no-op if not in trial). This sketch
-    // does it right after Wi-Fi succeeds.
+    // does it right after Wi-Fi succeeds. Production firmware would gate it
+    // on an end-to-end health probe (for example an MQTT round-trip).
     ota.confirmRunning();
 
     // Tell the server which partition layout this device uses.

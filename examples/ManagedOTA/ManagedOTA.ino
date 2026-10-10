@@ -54,6 +54,9 @@ void setup() {
 
     // Managed mode confirms the trial on the first 2xx response from the
     // server, after boot, connectivity, TLS, and token auth have worked.
+    // To gate confirmation on your own health check instead, call
+    // ota.setManagedAutoConfirm(false) and call ota.confirmRunning() once
+    // your app is healthy. See examples/RollbackOTA for that pattern.
 
     // Check every hour. The task waits for wifiUp() before each attempt
     // and reports results to onOtaResult() (only fires for non-success

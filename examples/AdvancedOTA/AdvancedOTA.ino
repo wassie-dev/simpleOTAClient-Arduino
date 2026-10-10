@@ -56,10 +56,8 @@ void setup() {
     SimpleOTAClient::setDebug(true);   // verbose [SimpleOTAClient] logs on Serial
     connectWiFi();
 
-    // Confirm a prior trial install (no-op if not in trial). Call this as
-    // early as your application can prove it is healthy. Here we do it
-    // right after Wi-Fi succeeds; production firmware would gate it on
-    // an end-to-end health probe (e.g., MQTT round-trip).
+    // Confirm a prior trial install (no-op if not in trial). This sketch
+    // does it right after Wi-Fi succeeds.
     ota.confirmRunning();
 
     // Tell the server which partition layout this device uses.

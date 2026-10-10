@@ -52,14 +52,8 @@ void setup() {
 
     ota.setVersionLabel(FIRMWARE_VERSION);
 
-    // Rollback (v0.2.0+) is enabled by default. In managed mode the library
-    // auto-confirms the trial as soon as the OTA task gets its first 2xx
-    // response from the server — proof that boot, connectivity, TLS, and token
-    // auth are all working. If you want to gate confirmation on your own
-    // application-level health check, call:
-    //   ota.setManagedAutoConfirm(false);
-    // and call ota.confirmRunning() yourself once your app is healthy.
-    // See examples/RollbackOTA for that pattern.
+    // Managed mode confirms the trial on the first 2xx response from the
+    // server, after boot, connectivity, TLS, and token auth have worked.
 
     // Check every hour. The task waits for wifiUp() before each attempt
     // and reports results to onOtaResult() (only fires for non-success

@@ -14,12 +14,6 @@
 //
 // IMPORTANT: confirmRunning() MUST be called before the timeout expires, or
 // the device will roll back. Don't gate it on something that may never happen.
-//
-// During a trial, call confirmRunning() before esp_deep_sleep_start().
-// Waking from deep sleep boots the chip again. The confirm time and the
-// chip watchdog both start over. A device that sleeps before confirming can
-// stay unconfirmed for as long as it keeps sleeping. The first reset that
-// is not a deep-sleep wake then switches back to the previous firmware.
 
 #include <WiFi.h>
 #include <SimpleOTAClient.h>
@@ -62,7 +56,7 @@ void setup() {
     // Give the application 120 seconds to call confirmRunning() after a
     // trial boot. Tune to the worst-case boot-to-healthy time of your
     // firmware (include OS init, transport bring-up, server handshake).
-    // The default is 300 seconds; on cellular consider raising it further.
+    // The default is 300 seconds.
     ota.setConfirmTimeout(120);
 
     ota.begin(/*checkIntervalSec*/ 3600,

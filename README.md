@@ -376,7 +376,7 @@ Sets this instance's trial confirm timeout in seconds. The default is `SIMPLEOTA
 
 ### `bool confirmRunning()`
 
-Tells the library that the running firmware is healthy. It stops the confirm timer and the chip watchdog, tells the bootloader the firmware is good, and then clears the trial flag from NVS. It also queues a `confirmed` status event for the next successful `/check/` round-trip. It returns `true` when a trial was in progress and is now confirmed, and `false` when no trial was in progress, which is a normal boot and a safe no-op. During a trial, call it before `esp_deep_sleep_start()`.
+Tells the library that the running firmware is healthy. It stops the confirm timer and the chip watchdog, tells the bootloader the firmware is good, and then clears the trial flag from NVS. It also queues a `confirmed` status event for the next successful `/check/` round-trip. It returns `true` when a trial was in progress and is now confirmed, and `false` when no trial was in progress, which is a normal boot and a safe no-op. See [Deep sleep](#deep-sleep).
 
 Call from your application code once you are satisfied the new firmware is working. In polling mode this is required after every successful OTA; in managed mode it is only required if you have called `setManagedAutoConfirm(false)`.
 
@@ -564,11 +564,7 @@ Use one `SimpleOTAClient` object in the firmware, because the trial state is sha
 
 ### Deep sleep
 
-Call `confirmRunning()` before the first `esp_deep_sleep_start()` of a trial boot. Light sleep only pauses the chip watchdog, but a wake from deep sleep is a new boot.
-
-The stock bootloader keeps an unconfirmed image across a deep-sleep wake only when `CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` is enabled. Without that setting, a deep-sleep wake during a trial can roll the image back, and the library warns about this at compile time.
-
-With the setting enabled, each deep-sleep wake starts the full confirm time over. A device that always goes back to deep sleep before the confirm time runs out therefore never times out, and `apply()` keeps returning `OTA_UNCONFIRMED`. The first reset that is not a deep-sleep wake then switches back to the previous firmware, even if the new firmware was healthy.
+Call `confirmRunning()` before `esp_deep_sleep_start()` during a trial. The stock Arduino-ESP32 core skips application validation on a deep-sleep wake (`CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP`), so an unconfirmed image stays on trial across those wakes. Each wake is a new boot, and the confirm time and the chip watchdog both start over. A device that returns to deep sleep before the confirm time runs out stays unconfirmed, and `apply()` keeps returning `OTA_UNCONFIRMED`. The first reset from another cause switches back to the previous firmware. Light sleep pauses the chip watchdog and remains the same boot. When a build leaves `CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` unset, a deep-sleep wake can roll the image back, and the library warns about that at compile time.
 
 ### Opting out
 

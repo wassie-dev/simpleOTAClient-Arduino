@@ -32,8 +32,6 @@ static const char* SOTA_TOKEN = "soto_proj_xxxx";   // project or device token
 #define FIRMWARE_VERSION "1.0.0"
 
 // Your project's PUBLIC signing key, exactly as shown in the dashboard.
-// During key rotation, pin the old and new key side by side with
-// ota.addSigningPublicKey("key-id", pem) (maximum of two).
 // The placeholder below intentionally does NOT parse: if you flash this
 // sketch without pasting your real key, setup() halts with a clear error
 // instead of pinning garbage and rejecting every update.

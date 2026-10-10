@@ -28,7 +28,7 @@
 #else
 #define SOTA_HAVE_SLOWCLK_CAL 0
 #endif
-/* esp_deep_sleep_register_hook() arrived in ESP-IDF 5.1 (Arduino core 3.x). */
+/* esp_deep_sleep_register_hook() needs ESP-IDF 5.1 or later (Arduino core 3.x). */
 #define SOTA_HAVE_DEEP_SLEEP_HOOK (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0))
 #else
 #define SOTA_WDT_C 0

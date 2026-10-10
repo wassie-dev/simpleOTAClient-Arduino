@@ -540,7 +540,7 @@ Ed25519 verification uses a vendored, unmodified copy of [Monocypher](https://mo
 
 ## Rollback
 
-Since v0.2.0 the library can try a new firmware and go back to the old one if the new one never proves healthy. When `apply()` succeeds, the library saves the partition address and the stored identity of the firmware it is replacing, and then it reboots into the new firmware. From that reboot until `confirmRunning()` runs, the new firmware is on trial.
+The library can try a new firmware and go back to the old one if the new one never proves healthy. When `apply()` succeeds, the library saves the partition address and the stored identity of the firmware it is replacing, and then it reboots into the new firmware. From that reboot until `confirmRunning()` runs, the new firmware is on trial.
 
 The stock Arduino-ESP32 bootloader can switch back to the previous firmware when a new one is never accepted, but `initArduino()` marks the running image valid before `setup()` unless `verifyRollbackLater()` returns `true`. This library returns `true` only on boots where it set its own trial flag in NVS, which is `sota_trial` set to 1 together with the previous partition address. On those boots the SimpleOTA firmware stays unconfirmed through `setup()`. An image written by ArduinoOTA or HTTPUpdate has no trial flag, so `initArduino()` marks it valid on that boot as usual.
 
@@ -556,7 +556,7 @@ At the usual slow clock the chip watchdog can wait at most about 8 hours, or abo
 
 ### What you must do
 
-Call `confirmRunning()` within the confirm time after boot. A polling sketch that first calls the library hours after boot used to stay on the new firmware, but now the chip watchdog resets that board and the bootloader switches back. AdvancedOTA calls `confirmRunning()` from `setup()`, and BasicOTA calls it at the top of `loop()`.
+Call `confirmRunning()` within the confirm time after boot. A polling sketch that first calls the library hours after boot is reset by the chip watchdog, and the bootloader switches back. AdvancedOTA calls `confirmRunning()` from `setup()`, and BasicOTA calls it at the top of `loop()`.
 
 If your bring-up is slow, call `setConfirmTimeout()` at the top of `setup()`, before a long network attach. During a trial, that call restarts the confirm timer and moves the chip watchdog to the same deadline. A bring-up that runs longer than the compiled-in confirm time plus its margin before reaching that call will reset the chip.
 
@@ -572,7 +572,7 @@ On core 3.x the library stops the chip watchdog just before deep sleep, so a sle
 
 Two build flags turn parts of this off. They must be real compiler defines, because a `#define` in the sketch does not reach the library source file. A sketch that defines its own `verifyRollbackLater()` fails to link, because the library already defines that function.
 
-`-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` stops the library from defining `verifyRollbackLater()` and from calling the bootloader's mark and rollback functions. The confirm timer still runs on a trial boot, and when it runs out the library switches the boot partition back itself, as it did before 0.5.0. What you lose is the switch back after a crash or a reset before `confirmRunning()`, and the chip watchdog.
+`-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` stops the library from defining `verifyRollbackLater()` and from calling the bootloader's mark and rollback functions. The confirm timer still runs on a trial boot, and when it runs out the library switches the boot partition back itself. What you lose is the switch back after a crash or a reset before `confirmRunning()`, and the chip watchdog.
 
 `-DSIMPLEOTA_DISABLE_TRIAL_WATCHDOG` keeps the bootloader's switch back but does not start the chip watchdog, so this library will not reset a hang during the trial.
 
@@ -662,7 +662,7 @@ Override these with a `-D` compiler flag. A `#define` in the sketch does not cha
 | `SIMPLEOTA_TRIAL_WDT_MARGIN_S` | `60` | This is the smallest margin, in seconds, added to the confirm time when the chip watchdog starts. If 10 percent of the confirm time is longer, the library uses that instead. Override it with `-DSIMPLEOTA_TRIAL_WDT_MARGIN_S=N`. |
 | `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` | `10` | During a trial install, the managed task retries `/check/` this often, in seconds. |
 | `SIMPLEOTA_DEBUG` | `0` | This is the compile-time default for verbose `[SimpleOTAClient]` logging on `Serial`. Calling `SimpleOTAClient::setDebug(true)` from the sketch is the preferred switch. See [Logging](#logging). |
-| `SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` | unset | Pass this as a `-D` build flag. The library then does not define `verifyRollbackLater()` and does not call the bootloader's mark or rollback functions. The confirm timer still switches the boot partition back itself, but a crash or a reset before `confirmRunning()` no longer switches back, and the chip watchdog is not started. See [Opting out](#opting-out). |
+| `SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` | unset | Pass this as a `-D` build flag. The library then does not define `verifyRollbackLater()` and does not call the bootloader's mark or rollback functions. The confirm timer still switches the boot partition back itself, but a crash or a reset before `confirmRunning()` does not switch back, and the chip watchdog is not started. See [Opting out](#opting-out). |
 | `SIMPLEOTA_DISABLE_TRIAL_WATCHDOG` | unset | Pass this as a `-D` build flag. The bootloader can still switch back after a crash or a reset, but the chip watchdog is not started, so this library does not reset a hang during the trial. |
 
 **Retry policy:** `check()` and status posts retry once after a 2-second delay on transport failure (HTTP code ≤ 0). They never retry on any received HTTP response. The firmware download in `apply()` does not retry; a failure returns `OTA_FLASH_FAIL` and the next `check()` cycle can try again.
@@ -728,7 +728,7 @@ If `Update.begin()` fails at runtime, this is the most likely cause. Verify your
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md). In version 0.5.0, a new SimpleOTA firmware stays unconfirmed until `confirmRunning()` runs or managed mode confirms it. A polling sketch that used to call the library hours after boot now has to confirm within the confirm time, or the chip watchdog resets the board.
+See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 

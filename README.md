@@ -376,7 +376,7 @@ Sets this instance's trial confirm timeout in seconds. The default is `SIMPLEOTA
 
 ### `bool confirmRunning()`
 
-Tells the library that the running firmware is healthy. It stops the confirm timer and the chip watchdog, tells the bootloader the firmware is good, and then clears the trial flag from NVS. It also queues a `confirmed` status event for the next successful `/check/` round-trip. It returns `true` when a trial was in progress and is now confirmed, and `false` when no trial was in progress, which is a normal boot and a safe no-op. See [Deep sleep](#deep-sleep).
+Tells the library that the running firmware is healthy. It tells the bootloader the firmware is good, stops the confirm timer and the chip watchdog, and then clears the trial flag from NVS. It also queues a `confirmed` status event for the next successful `/check/` round-trip. It returns `true` when a trial was in progress and is now confirmed, and `false` when no trial was in progress, which is a normal boot and a safe no-op. If the bootloader cannot record the firmware as good, it also returns `false`, and the trial carries on with its timer and watchdog. See [Deep sleep](#deep-sleep).
 
 Call from your application code once you are satisfied the new firmware is working. In polling mode this is required after every successful OTA; in managed mode it is only required if you have called `setManagedAutoConfirm(false)`.
 
@@ -552,11 +552,11 @@ During a SimpleOTA trial the library also starts a watchdog that runs on the chi
 
 With the stock Arduino-ESP32 core this watchdog covers the ESP32, S2, S3, C3, C5, C6, H2, and P4. The stock 3.x core does not build the ESP32-C2. That chip is reachable when Arduino is an ESP-IDF component, and the project must enable app rollback in its own sdkconfig, which ESP-IDF leaves off by default. If a target's build has no `hal/wdt_hal.h`, the library does not start the watchdog and prints that a hang during the trial will not be reset. A crash or a reset still switches back through the bootloader. See [Limitations](#limitations).
 
-At the usual slow clock the chip watchdog can wait at most about 8 hours, or about 13 hours on the ESP32-S2. If you set a longer time with `setConfirmTimeout()`, the software timer still uses the time you asked for, but the chip watchdog fires at its maximum.
+At the usual slow clock the chip watchdog can wait at most about 8 hours, or about 13 hours on the ESP32-S2. If you set a longer time with `setConfirmTimeout()`, the software timer still uses the time you asked for, but the chip watchdog fires at its maximum, and the library prints a warning on Serial when it arms the watchdog.
 
 ### What you must do
 
-Call `confirmRunning()` within the confirm time after boot. A polling sketch that first calls the library hours after boot used to stay on the new firmware, but now the chip watchdog resets that board and the bootloader switches back. The BasicOTA and AdvancedOTA examples call `confirmRunning()` from `setup()`.
+Call `confirmRunning()` within the confirm time after boot. A polling sketch that first calls the library hours after boot used to stay on the new firmware, but now the chip watchdog resets that board and the bootloader switches back. AdvancedOTA calls `confirmRunning()` from `setup()`, and BasicOTA calls it at the top of `loop()`.
 
 If your bring-up is slow, call `setConfirmTimeout()` at the top of `setup()`, before a long network attach. During a trial, that call restarts the confirm timer and moves the chip watchdog to the same deadline. A bring-up that runs longer than the compiled-in confirm time plus its margin before reaching that call will reset the chip.
 
@@ -564,7 +564,9 @@ Use one `SimpleOTAClient` object in the firmware, because the trial state is sha
 
 ### Deep sleep
 
-Call `confirmRunning()` before `esp_deep_sleep_start()` during a trial. The stock Arduino-ESP32 core skips application validation on a deep-sleep wake (`CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP`), so an unconfirmed image stays on trial across those wakes. Each wake is a new boot, and the confirm time and the chip watchdog both start over. A device that returns to deep sleep before the confirm time runs out stays unconfirmed, and `apply()` keeps returning `OTA_UNCONFIRMED`. The first reset from another cause switches back to the previous firmware. Light sleep pauses the chip watchdog and remains the same boot. When a build leaves `CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` unset, a deep-sleep wake can roll the image back, and the library warns about that at compile time.
+Call `confirmRunning()` before `esp_deep_sleep_start()` during a trial. The stock Arduino-ESP32 core skips application validation on a deep-sleep wake (`CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP`), so an unconfirmed image stays on trial across those wakes. Each wake is a new boot, and the confirm time and the chip watchdog both start over. A device that returns to deep sleep before the confirm time runs out stays unconfirmed, and `apply()` keeps returning `OTA_UNCONFIRMED`. The first reset from another cause switches back to the previous firmware. When a build leaves `CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` unset, a deep-sleep wake can roll the image back, and the library warns about that at compile time.
+
+On core 3.x the library stops the chip watchdog just before deep sleep, so a sleep of any length does not end in a watchdog reset. Core 2.x has no hook for that, so on 2.x a deep sleep that outlasts the rest of the confirm time plus its margin can end in a watchdog reset, which switches back to the previous firmware. Light sleep pauses the chip watchdog and remains the same boot.
 
 ### Opting out
 

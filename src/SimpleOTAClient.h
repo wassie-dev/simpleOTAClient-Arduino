@@ -420,15 +420,16 @@ public:
     /**
      * @brief Confirm that the currently-running firmware is healthy.
      *
-     * Stops the rollback timer, disarms the chip watchdog, marks the running
-     * image valid in the bootloader, and then clears the trial record. Safe
+     * Marks the running image valid in the bootloader, stops the rollback
+     * timer, disarms the chip watchdog, and then clears the trial record. Safe
      * to call unconditionally from setup(), even before check() or begin().
      * Call it before esp_deep_sleep_start() during a trial. A power cut after
      * the image is marked valid and before the record is cleared is treated
      * as confirmed on the next boot.
      *
      * @return true if a trial was active and is now confirmed; false if the device
-     *         was not in a trial (the call is a no-op in that case).
+     *         was not in a trial (the call is a no-op in that case), or if the
+     *         bootloader could not record the image as valid (the trial goes on).
      */
     bool confirmRunning();
 
@@ -603,6 +604,8 @@ private:
     void performRollback();            ///< NVS boot-partition fallback. Does not return.
     void rollbackExpiredTrial();       ///< Bootloader rollback, then performRollback() if that returns.
     void clearTrialState();            ///< Wipe trial snapshot keys only (sota_trial, sota_prev_*). Does NOT touch sota_fail_* or sota_conf_pend.
+    bool queueConfirmedReport(const String& deploymentId, uint32_t build);  ///< Queue the deferred "confirmed" POST.
+    bool queueConfirmedReportFromNvs(); ///< queueConfirmedReport() from the saved sota_fail_* keys.
     void reportRolledBackIfPending();  ///< Attempt the deferred rolled_back POST.
     void reportConfirmedIfPending();   ///< Attempt the deferred confirmed POST.
 

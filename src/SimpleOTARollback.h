@@ -59,10 +59,10 @@ static inline bool sotaShouldMarkImageValid(
  * SOTA_TRIAL_NONE            No record, or nothing this boot must change.
  * SOTA_TRIAL_HOLD            Arm the confirm timer. Roll back only if the
  *                            image is still unconfirmed when it fires.
- * SOTA_TRIAL_CONFIRMED       The image is already valid and this is not the
- *                            previous partition. The trial record is leftover
- *                            from a confirm that lost power before the record
- *                            was cleared. Queue the confirmed report and do
+ * SOTA_TRIAL_CONFIRMED       The bootloader reports the image valid and this
+ *                            is not the previous partition. The record is
+ *                            left over from a confirm that lost power before
+ *                            it was cleared. Queue the confirmed report and do
  *                            not arm the timer or the watchdog.
  * SOTA_TRIAL_ROLLED_BACK     Already back on the previous partition, or a
  *                            rollback was recorded earlier (trial == 2).
@@ -81,7 +81,7 @@ typedef enum SotaTrialBoot {
 
 static inline SotaTrialBoot sotaTrialBootAction(
     bool bootloaderRollbackCompiled,
-    bool imagePending,
+    bool imageValid,
     bool nvsOpen,
     uint8_t trial,
     bool rollbackEnabled,
@@ -95,9 +95,10 @@ static inline SotaTrialBoot sotaTrialBootAction(
     if (trial != 1) return SOTA_TRIAL_NONE;
     if (!haveRunningPartition || prevPart == 0) return SOTA_TRIAL_CLEAR;
     if (runningMatchesPrev) return SOTA_TRIAL_ROLLED_BACK;
-    /* Bootloader rollback is off, so the image was never left unconfirmed.
-       The saved record is the only trial, and the timer still has to run. */
-    if (bootloaderRollbackCompiled && !imagePending) return SOTA_TRIAL_CONFIRMED;
+    /* Only an image the bootloader reports as valid was confirmed. An image
+       that never became pending (bootloader built without app rollback)
+       still needs the confirm timer. */
+    if (bootloaderRollbackCompiled && imageValid) return SOTA_TRIAL_CONFIRMED;
     return SOTA_TRIAL_HOLD;
 }
 
@@ -138,6 +139,17 @@ static inline bool sotaTimeoutRearmAllowed(uint8_t phase)
     return phase == SOTA_PHASE_TRIAL;
 }
 
+/** Accepted confirm timeouts, in seconds. */
+#define SOTA_CONFIRM_TIMEOUT_MIN_S 10u
+#define SOTA_CONFIRM_TIMEOUT_MAX_S 86400u
+
+static inline uint32_t sotaClampConfirmTimeout(uint32_t seconds)
+{
+    if (seconds < SOTA_CONFIRM_TIMEOUT_MIN_S) return SOTA_CONFIRM_TIMEOUT_MIN_S;
+    if (seconds > SOTA_CONFIRM_TIMEOUT_MAX_S) return SOTA_CONFIRM_TIMEOUT_MAX_S;
+    return seconds;
+}
+
 /**
  * Confirm-timer period in FreeRTOS ticks. The multiply is 64-bit because
  * pdMS_TO_TICKS() multiplies in 32 bits and wraps past 4294 seconds when
@@ -160,11 +172,13 @@ static inline uint32_t sotaWatchMarginSec(uint32_t confirmSec, uint32_t floorSec
 /**
  * Slow-clock ticks for a duration. calQ13_19 is the cached calibration
  * (microseconds per tick, Q13.19). Returns 0 when cal is 0 so the caller
- * can fall back to the nominal frequency.
+ * can fall back to the nominal frequency, and saturates instead of
+ * overflowing.
  */
 static inline uint64_t sotaSlowclkTicks(uint64_t timeoutUs, uint32_t calQ13_19)
 {
     if (calQ13_19 == 0) return 0;
+    if (timeoutUs > (UINT64_MAX >> 19)) return UINT64_MAX;
     return (timeoutUs << 19) / (uint64_t)calQ13_19;
 }
 
@@ -240,6 +254,7 @@ void sota_wdt_arm(uint32_t confirm_sec);
 void sota_wdt_disarm(void);
 void sota_wdt_quiesce(void);
 bool sota_wdt_is_armed(void);
+bool sota_wdt_is_clamped(void);
 #ifdef __cplusplus
 }
 #endif

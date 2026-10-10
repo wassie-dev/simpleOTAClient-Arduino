@@ -282,19 +282,19 @@ int main(void) {
           "mark valid: rollback turned off");
 
     // Power loss after confirm, and the timer without bootloader rollback.
-    CHECK(sotaTrialBootAction(true, false, true, 1, true, 0x20000, false, true)
+    CHECK(sotaTrialBootAction(true, true, true, 1, true, 0x20000, false, true)
               == SOTA_TRIAL_CONFIRMED,
           "already valid + trial record is confirmed, not rolled back");
-    CHECK(sotaTrialBootAction(true, true, true, 1, true, 0x20000, false, true)
+    CHECK(sotaTrialBootAction(true, false, true, 1, true, 0x20000, false, true)
               == SOTA_TRIAL_HOLD,
-          "still unconfirmed trial arms the timer");
-    CHECK(sotaTrialBootAction(false, false, true, 1, true, 0x20000, false, true)
+          "an image that is not valid yet arms the timer");
+    CHECK(sotaTrialBootAction(false, true, true, 1, true, 0x20000, false, true)
               == SOTA_TRIAL_HOLD,
           "without bootloader rollback the NVS timer still arms");
     CHECK(sotaTrialBootAction(true, false, true, 1, true, 0x20000, true, true)
               == SOTA_TRIAL_ROLLED_BACK,
           "running the previous partition is a rollback");
-    CHECK(sotaTrialBootAction(true, true, true, 1, false, 0x20000, false, true)
+    CHECK(sotaTrialBootAction(true, false, true, 1, false, 0x20000, false, true)
               == SOTA_TRIAL_ACCEPT_RESIDUAL,
           "rollback disabled accepts a residual trial");
 
@@ -315,6 +315,12 @@ int main(void) {
     CHECK(sotaTimeoutRearmAllowed(SOTA_PHASE_TRIAL),
           "setConfirmTimeout re-arms during a trial");
 
+    // Confirm timeout range.
+    CHECK(sotaClampConfirmTimeout(0) == 10u, "a zero timeout is raised to 10 s");
+    CHECK(sotaClampConfirmTimeout(300) == 300u, "an in-range timeout is kept");
+    CHECK(sotaClampConfirmTimeout(0xFFFFFFFFu) == 86400u,
+          "a huge timeout is lowered to 24 h");
+
     // Timer period past 4294 seconds.
     CHECK(sotaConfirmTimerTicks(7200, 1000) == 7200000u,
           "7200 s at 1000 Hz is 7200000 ticks");
@@ -329,6 +335,10 @@ int main(void) {
     const uint32_t cal = (uint32_t)(((uint64_t)1000000 << 19) / 150000u);
     CHECK(sotaSlowclkTicks(us, cal) > 0, "calibrated ticks are non-zero");
     CHECK(sotaSlowclkTicks(us, 0) == 0, "a zero calibration asks for the nominal fallback");
+    CHECK(sotaSlowclkTicks(UINT64_MAX / 2, cal) == UINT64_MAX,
+          "a huge duration saturates instead of wrapping");
+    CHECK(sotaSlowclkTicks(86400ull * 1000000ull, cal) > 0xFFFFFFFFull,
+          "24 h at 150 kHz is more than the 32-bit stage holds");
 
     // Rollback reason.
     CHECK(strcmp(sotaRollbackReason(SOTA_RST_PANIC, "confirm_timeout"),

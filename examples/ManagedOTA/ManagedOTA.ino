@@ -35,9 +35,9 @@ static bool wifiUp() {
 // successful updates reboot before this fires, so in practice you'll only
 // see failures here.
 static void onOtaResult(OTAResult r) {
-    // OTA_UNCONFIRMED and OTA_REBOOT_PENDING mean the update is waiting,
-    // not that it failed.
-    if (r != OTA_SUCCESS && r != OTA_UNCONFIRMED && r != OTA_REBOOT_PENDING) {
+    // OTA_UNCONFIRMED, OTA_REBOOT_PENDING, and OTA_ROLLBACK_PENDING mean
+    // the update is waiting, not that it failed.
+    if (r != OTA_SUCCESS && r != OTA_UNCONFIRMED && r != OTA_REBOOT_PENDING && r != OTA_ROLLBACK_PENDING) {
         Serial.printf("[app] OTA failed: %d\n", (int)r);
     }
 }

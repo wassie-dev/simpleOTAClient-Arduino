@@ -359,14 +359,20 @@ int main(void) {
 
     // Reboot-pending: the flag is checked before a missing offer, and a
     // new offer is not installed while a flashed image is waiting.
-    CHECK(sotaApplyGuard(true, false) == SOTA_APPLY_REBOOT_PENDING,
+    CHECK(sotaApplyGuard(true, false, false) == SOTA_APPLY_REBOOT_PENDING,
           "apply with no offer still returns reboot pending");
-    CHECK(sotaApplyGuard(true, true) == SOTA_APPLY_REBOOT_PENDING,
+    CHECK(sotaApplyGuard(true, false, true) == SOTA_APPLY_REBOOT_PENDING,
           "apply does not flash a new offer while reboot is pending");
-    CHECK(sotaApplyGuard(false, false) == SOTA_APPLY_NO_OFFER,
+    CHECK(sotaApplyGuard(true, true, true) == SOTA_APPLY_REBOOT_PENDING,
+          "a pending reboot is decided before the rollback report");
+    CHECK(sotaApplyGuard(false, false, false) == SOTA_APPLY_NO_OFFER,
           "apply with no offer and no pending reboot");
-    CHECK(sotaApplyGuard(false, true) == SOTA_APPLY_PROCEED,
+    CHECK(sotaApplyGuard(false, false, true) == SOTA_APPLY_PROCEED,
           "apply proceeds when an offer is present");
+    CHECK(sotaApplyGuard(false, true, true) == SOTA_APPLY_ROLLBACK_PENDING,
+          "apply waits while a rolled_back report is unaccepted");
+    CHECK(sotaApplyGuard(false, true, false) == SOTA_APPLY_ROLLBACK_PENDING,
+          "apply waits on the rollback report even when no offer is stored");
     {
         const SotaStatusTarget pending = sotaStatusTarget(
             true, "flashed-dep", 9, "newer-offer", 10);
@@ -384,7 +390,108 @@ int main(void) {
               "an empty reboot slot falls back to the current offer");
     }
 
-    // A retried report is dropped only when sending it again cannot help.
+    // Status answers. A rolled_back record is cleared only when the answer
+    // is accepted. A retry or a rejection leaves the trial and the reason.
+    CHECK(!sotaRollbackReportAccepted(SOTA_STATUS_RETRY),
+          "a retry is not acceptance");
+    CHECK(!sotaRollbackReportAccepted(SOTA_STATUS_REJECTED),
+          "a rejection is not acceptance");
+    CHECK(sotaRollbackReportAccepted(SOTA_STATUS_ACCEPTED),
+          "accepted=true is acceptance");
+    CHECK(!sotaClearRollbackReason(false),
+          "a report that was not accepted leaves sota_rb_why in place");
+    CHECK(sotaClearRollbackReason(true),
+          "an accepted rolled_back clears sota_rb_why");
+    CHECK(!sotaClearTrialOnRollbackAccept(false),
+          "a report that was not accepted leaves the trial record");
+    CHECK(sotaClearTrialOnRollbackAccept(true),
+          "an accepted rolled_back clears the trial record");
+    CHECK(sotaRollbackRecordReportable("dep-a", 7),
+          "a deployment and build can be reported");
+    CHECK(!sotaRollbackRecordReportable("", 7),
+          "an empty deployment cannot be reported");
+    CHECK(!sotaRollbackRecordReportable("dep-a", 0),
+          "a zero build cannot be reported");
+    CHECK(!sotaRollbackRecordReportable(nullptr, 7),
+          "a missing deployment cannot be reported");
+
+    // Chained crash-before-Wi-Fi.
+    // Image A crashes before it reaches Wi-Fi. The rolled_back report is
+    // not accepted. Offers B and C are applied only when the guard says
+    // proceed. While it waits, B never boots, so B cannot overwrite A's
+    // reason or become the primary record, and C cannot drop A. After the
+    // server accepts A, C can be flashed, and C's own crash saves a new
+    // reason.
+    {
+        const char* deployment = "A";
+        uint32_t build = 7;
+        const char* reason = sotaRollbackReason(SOTA_RST_PANIC, "");
+        bool reportPending = true;
+        CHECK(strcmp(reason, "panic") == 0,
+              "A's crash-before-Wi-Fi saves panic");
+        CHECK(strcmp(sotaReportRollbackReason(reason), "panic") == 0,
+              "A is reported as panic");
+
+        const SotaApplyGuard offerB = sotaApplyGuard(false, reportPending, true);
+        if (offerB == SOTA_APPLY_PROCEED) {
+            deployment = "B";
+            build = 8;
+            reason = "confirm_timeout";
+        }
+        CHECK(offerB == SOTA_APPLY_ROLLBACK_PENDING,
+              "offer B waits; A is not replaced and B is not flashed");
+        CHECK(!sotaClearRollbackReason(sotaRollbackReportAccepted(SOTA_STATUS_REJECTED)),
+              "rejecting B's would-be report does not clear A's reason");
+        CHECK(!sotaClearTrialOnRollbackAccept(false),
+              "refusing B does not clear A's trial");
+        CHECK(strcmp(deployment, "A") == 0 && build == 7
+                  && strcmp(reason, "panic") == 0,
+              "B's crash-before-Wi-Fi does not replace A's record or reason");
+        CHECK(strcmp(sotaRollbackReason(SOTA_RST_SW, reason), "panic") == 0,
+              "a later reset does not replace A's saved reason");
+
+        const SotaApplyGuard offerC = sotaApplyGuard(false, reportPending, true);
+        if (offerC == SOTA_APPLY_PROCEED) {
+            deployment = "C";
+            build = 9;
+            reason = "";
+        }
+        CHECK(offerC == SOTA_APPLY_ROLLBACK_PENDING,
+              "offer C still waits, so A's rolled_back is not dropped");
+        CHECK(strcmp(deployment, "A") == 0 && build == 7,
+              "A is still the primary rollback");
+        CHECK(strcmp(sotaReportRollbackReason(reason), "panic") == 0,
+              "A is still reported as panic, not reset");
+
+        const bool accepted = sotaRollbackReportAccepted(SOTA_STATUS_ACCEPTED);
+        if (sotaClearRollbackReason(accepted)) reason = "";
+        if (sotaClearTrialOnRollbackAccept(accepted)) {
+            deployment = "";
+            build = 0;
+            reportPending = false;
+        }
+        CHECK(!reportPending && reason[0] == '\0' && deployment[0] == '\0'
+                  && build == 0,
+              "accepting A clears the trial and the reason");
+
+        const SotaApplyGuard offerAfter = sotaApplyGuard(false, reportPending, true);
+        CHECK(offerAfter == SOTA_APPLY_PROCEED,
+              "offer C proceeds only after A's report is accepted");
+        if (offerAfter == SOTA_APPLY_PROCEED) {
+            deployment = "C";
+            build = 9;
+            reason = sotaRollbackReason(SOTA_RST_PANIC, reason);
+        }
+        CHECK(strcmp(reason, "panic") == 0 && strcmp(deployment, "C") == 0
+                  && build == 9,
+              "C's crash-before-Wi-Fi saves C's own panic reason");
+        CHECK(strcmp(sotaReportRollbackReason(reason), "panic") == 0,
+              "C is reported as panic, not reset");
+        CHECK(sotaRollbackRecordReportable(deployment, build),
+              "C's rollback can be reported");
+    }
+
+    // A retried status answer is distinct from a final rejection.
     CHECK(sotaStatusOutcome(200, true, true) == SOTA_STATUS_ACCEPTED,
           "2xx accepted=true is accepted");
     CHECK(sotaStatusOutcome(200, true, false) == SOTA_STATUS_REJECTED,

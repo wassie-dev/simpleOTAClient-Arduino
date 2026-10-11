@@ -243,19 +243,28 @@ static inline const char* sotaReportRollbackReason(const char* stored)
 }
 
 /**
- * apply() while a flashed image is waiting for rebootForUpdate().
- * The pending reboot is decided before the missing-offer case, so a
- * second apply() with no new offer still returns the pending result.
+ * apply() before any download.
+ *
+ * A flashed image waiting for rebootForUpdate() is first: a second apply()
+ * with no new offer still returns that pending result.
+ * An unaccepted rolled_back report is next, including when no offer is
+ * stored. apply() then keeps the offer, flashes nothing, and reports
+ * nothing, so the trial record and its reason stay as they are.
  */
 typedef enum SotaApplyGuard {
     SOTA_APPLY_REBOOT_PENDING = 1,
-    SOTA_APPLY_NO_OFFER = 2,
-    SOTA_APPLY_PROCEED = 3,
+    SOTA_APPLY_ROLLBACK_PENDING = 2,
+    SOTA_APPLY_NO_OFFER = 3,
+    SOTA_APPLY_PROCEED = 4,
 } SotaApplyGuard;
 
-static inline SotaApplyGuard sotaApplyGuard(bool rebootPending, bool hasOffer)
+static inline SotaApplyGuard sotaApplyGuard(
+    bool rebootPending,
+    bool rollbackReportPending,
+    bool hasOffer)
 {
     if (rebootPending) return SOTA_APPLY_REBOOT_PENDING;
+    if (rollbackReportPending) return SOTA_APPLY_ROLLBACK_PENDING;
     if (!hasOffer) return SOTA_APPLY_NO_OFFER;
     return SOTA_APPLY_PROCEED;
 }
@@ -318,6 +327,37 @@ static inline SotaStatusOutcome sotaStatusOutcome(
         return SOTA_STATUS_REJECTED;
     }
     return SOTA_STATUS_RETRY;
+}
+
+/**
+ * The rolled_back trial record and sota_rb_why are removed only when the
+ * server accepted the report. A retry or a rejection leaves both in place.
+ * apply() does not remove the reason when it arms a later trial.
+ */
+static inline bool sotaRollbackReportAccepted(int outcome)
+{
+    return outcome == SOTA_STATUS_ACCEPTED;
+}
+
+static inline bool sotaClearRollbackReason(bool reportAccepted)
+{
+    return reportAccepted;
+}
+
+static inline bool sotaClearTrialOnRollbackAccept(bool reportAccepted)
+{
+    return reportAccepted;
+}
+
+/**
+ * True when the saved rolled_back has a deployment and a build that can
+ * be sent. An empty record cannot be reported.
+ */
+static inline bool sotaRollbackRecordReportable(
+    const char* deploymentId,
+    uint32_t buildNumber)
+{
+    return deploymentId && deploymentId[0] != '\0' && buildNumber != 0;
 }
 
 /*

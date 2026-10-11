@@ -827,13 +827,8 @@ bool SimpleOTAClient::check() {
     // is stored separately and stays in place.
     clearOffer();
 
-    // A new trial would reuse the NVS keys the unsent rolled_back report is
-    // read from, so no update is taken until the server has answered it.
-    if (_rolledBackPending) {
-        _lastCheckOk = false;
-        SOTA_LOG("check: rolled_back report not delivered yet; not checking for updates");
-        return false;
-    }
+    // The rolled_back report was attempted above. An offer may still be
+    // stored. apply() does not flash it while that report is unaccepted.
 
     uint32_t currentBuild = readBuildNumber();
     SOTA_LOG("check: current_build_number=%u", (unsigned)currentBuild);
@@ -1024,9 +1019,10 @@ bool SimpleOTAClient::report(const char* event, const char* reason) {
 
 // Convenience for applications using setAutoReboot(false): emit the same
 // "reboot" event apply() would emit on the auto-reboot path, then restart.
-// Does not return. Skips the status POST silently if no deployment context
-// is available (e.g. called outside the post-apply window) so the reboot
-// itself is still honored.
+// Does not return. The event uses the deployment that was flashed. check()
+// keeps that deployment and does not install a new offer while the reboot
+// is still pending. If no deployment was flashed and there is no current
+// offer, the status POST is skipped and the device still reboots.
 void SimpleOTAClient::rebootForUpdate() {
     const SotaStatusTarget target = sotaStatusTarget(
         _rebootPending, _rebootDeploymentId.c_str(), _rebootBuildNumber,
@@ -1048,12 +1044,23 @@ void SimpleOTAClient::rebootForUpdate() {
 // ---------------------------------------------------------------------------
 
 OTAResult SimpleOTAClient::apply() {
+    // Boot validation sets _rolledBackPending from the saved trial before
+    // the guard reads it. check() also calls this; the second call is a no-op.
+    processBootValidation();
+
     // A flashed image waiting for reboot wins over a missing offer, so a
     // later apply() returns OTA_REBOOT_PENDING even when check() has nothing new.
-    const SotaApplyGuard guard = sotaApplyGuard(_rebootPending, _hasOffer);
+    // An unaccepted rolled_back report wins over a new offer: the trial
+    // record and its reason stay until that report is accepted.
+    const SotaApplyGuard guard = sotaApplyGuard(
+        _rebootPending, _rolledBackPending, _hasOffer);
     if (guard == SOTA_APPLY_REBOOT_PENDING) {
         SOTA_LOG("apply: an update is waiting for rebootForUpdate(); not flashing");
         return OTA_REBOOT_PENDING;
+    }
+    if (guard == SOTA_APPLY_ROLLBACK_PENDING) {
+        SOTA_LOG("apply: rolled_back report not accepted yet; not flashing");
+        return OTA_ROLLBACK_PENDING;
     }
     if (guard == SOTA_APPLY_NO_OFFER) {
         SOTA_LOG("apply: no offer");
@@ -1063,7 +1070,6 @@ OTAResult SimpleOTAClient::apply() {
     // A new image is refused while the running one is still unconfirmed.
     // The offer stays. This is logged locally and not reported as a failed
     // update, because the running firmware has not failed.
-    processBootValidation();
     if (sota_running_is_pending()) {
         SOTA_LOG("apply: running image still unconfirmed; not flashing");
         return OTA_UNCONFIRMED;
@@ -1342,8 +1348,10 @@ OTAResult SimpleOTAClient::apply() {
 }
 
 // Save the confirm context for the image apply() just flashed and, when
-// rollback is enabled, arm its trial. check() takes no offer while a
-// rolled_back report is unsent, so these keys do not hold one here.
+// rollback is enabled, arm its trial. apply() does not reach here while a
+// rolled_back report is unaccepted, so this write does not replace that
+// report. sota_rb_why is not removed here; it is removed only after the
+// report that owns it is accepted.
 void SimpleOTAClient::persistTrialRecord() {
     Preferences p;
     if (!p.begin(kNvsNamespace, /*readOnly=*/false)) {
@@ -1354,9 +1362,6 @@ void SimpleOTAClient::persistTrialRecord() {
     p.putUInt  (kNvsKeyFailBuild,   _buildNumber);
     p.putUChar (kNvsKeyConfirmPend, 1);
     if (_rollbackEnabled) {
-        // A new trial starts without a rollback reason. A reason left from
-        // an earlier rollback would be reported for this one.
-        p.remove(kNvsKeyRbWhy);
         p.putUChar(kNvsKeyTrial, 1);
         SOTA_LOG("apply: armed trial (timeout=%us deployment=%s)",
                  (unsigned)_confirmTimeoutSec, _deploymentId.c_str());
@@ -1768,8 +1773,9 @@ bool SimpleOTAClient::confirmRunning() {
 }
 
 // Report a rolled_back event if one is pending. Called from check() before
-// any offer is taken. The report and its NVS keys are cleared once the
-// server accepts it, or rejects it in a way a retry would not change.
+// the offer is stored. The trial record and sota_rb_why stay until the
+// server accepts the report, and are removed only then. A retry or a
+// rejection leaves both in place.
 void SimpleOTAClient::reportRolledBackIfPending() {
     if (!_rolledBackPending) return;
 
@@ -1780,8 +1786,11 @@ void SimpleOTAClient::reportRolledBackIfPending() {
     String   storedWhy = p.getString(kNvsKeyRbWhy, "");
     p.end();
 
-    if (failDep.isEmpty() || failBuild == 0) {
-        // Nothing usable to report; clear everything so we don't loop forever.
+    if (!sotaRollbackRecordReportable(failDep.c_str(), failBuild)) {
+        // No deployment can be reported, so this boot stops retrying.
+        // The empty record is dropped, including sota_rb_why, so a later
+        // rollback can save its own reason. A record that still has a
+        // deployment keeps the trial and the reason until accepted.
         SOTA_LOG("rolled_back: no failure context; clearing");
         clearRolledBackReport();
         return;
@@ -1792,19 +1801,31 @@ void SimpleOTAClient::reportRolledBackIfPending() {
     const char* reason = sotaReportRollbackReason(storedWhy.c_str());
     const int outcome = statusOutcomeFor(
         "rolled_back", reason, failDep.c_str(), failBuild);
-    if (outcome == SOTA_STATUS_RETRY) {
-        SOTA_LOG("rolled_back: no answer from the server; will retry");
+    if (!sotaRollbackReportAccepted(outcome)) {
+        SOTA_LOG("rolled_back: server did not accept; will retry");
         return;
     }
-    if (outcome == SOTA_STATUS_ACCEPTED) {
-        SOTA_LOG("rolled_back: server acknowledged");
-    } else {
-        SOTA_LOG("rolled_back: server rejected the report; dropping it");
+
+    SOTA_LOG("rolled_back: server acknowledged");
+    if (sotaClearTrialOnRollbackAccept(true)) {
+        clearTrialState();
     }
-    clearRolledBackReport();
+    Preferences pf;
+    if (pf.begin(kNvsNamespace, /*readOnly=*/false)) {
+        pf.remove(kNvsKeyFailDep);
+        pf.remove(kNvsKeyFailBuild);
+        pf.remove(kNvsKeyConfirmPend);
+        if (sotaClearRollbackReason(true)) {
+            pf.remove(kNvsKeyRbWhy);
+        }
+        pf.end();
+    }
+    _rolledBackPending = false;
 }
 
-// Drop the rolled_back report and the trial record it came from.
+// Drop an unreportable rolled_back record, including its reason, so a
+// later rollback can save its own. A record that can be sent is not
+// passed here; that record stays until the server accepts it.
 void SimpleOTAClient::clearRolledBackReport() {
     clearTrialState();
     Preferences pf;

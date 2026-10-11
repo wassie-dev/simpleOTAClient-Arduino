@@ -6,7 +6,7 @@
 - Polling sketches must call `confirmRunning()` within the confirm time. A sketch that first calls the library hours after boot is reset by the chip watchdog and switched back. AdvancedOTA calls `confirmRunning()` from `setup()`, BasicOTA at the top of `loop()`, and RollbackOTA once its health check passes.
 - `apply()` returns `OTA_UNCONFIRMED` while the running firmware is unconfirmed. It does not send a `failed` event, and the offer is kept.
 - With `setAutoReboot(false)`, `apply()` returns `OTA_REBOOT_PENDING` while a flashed update waits for `rebootForUpdate()`, and does not download. A second download could overwrite the waiting update, and if it was cut off, the next boot reported that update as rolled back.
-- While a `rolled_back` report is unsent, `check()` takes no update. The report is dropped once the server accepts it, or rejects it with `accepted: false` or a 4xx other than 401, 403, 408, and 429.
+- While a `rolled_back` report has not been accepted, `apply()` returns `OTA_ROLLBACK_PENDING`. It keeps the offer, flashes nothing, and reports nothing. The trial record and the saved reason stay until the server accepts the report, and are cleared only then.
 - While an update waits for `rebootForUpdate()`, `check()` takes no new offer, and `report()` and `rebootForUpdate()` keep using the flashed deployment.
 - An accepted `confirmed` report clears its NVS keys only while they still name that deployment.
 - `rolled_back` reports carry the reason saved when the rollback was detected: `confirm_timeout`, or the reset reason such as `panic`, `watchdog`, or `brownout`.

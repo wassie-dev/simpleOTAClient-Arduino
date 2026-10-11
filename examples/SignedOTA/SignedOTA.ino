@@ -54,7 +54,7 @@ static void onOtaResult(OTAResult r) {
         // Investigate before anything else: check the dashboard's device
         // row (reason: signature_invalid) and your signing pipeline.
         Serial.println("[app] OTA rejected: firmware signature invalid!");
-    } else if (r != OTA_SUCCESS && r != OTA_UNCONFIRMED && r != OTA_REBOOT_PENDING) {
+    } else if (r != OTA_SUCCESS && r != OTA_UNCONFIRMED && r != OTA_REBOOT_PENDING && r != OTA_ROLLBACK_PENDING) {
         Serial.printf("[app] OTA failed: %d\n", (int)r);
     }
 }

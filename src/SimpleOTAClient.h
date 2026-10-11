@@ -92,10 +92,11 @@ enum OTAResult {
     OTA_SUCCESS        = 0,  ///< Firmware flashed and validated. Auto-reboot restarts before this returns. With setAutoReboot(false), call rebootForUpdate().
     OTA_CHECKSUM_FAIL  = 1,  ///< Downloaded payload did not match expected SHA-256.
     OTA_FLASH_FAIL     = 2,  ///< Network or partition write failure.
-    OTA_NO_OFFER       = 3,  ///< No offer is stored, and no flashed update is waiting for rebootForUpdate().
+    OTA_NO_OFFER       = 3,  ///< No offer is stored, no flashed update is waiting for rebootForUpdate(), and no rolled_back report is still unaccepted.
     OTA_SIGNATURE_FAIL = 4,  ///< Ed25519 signature verification failed; image rejected before it was marked bootable.
     OTA_UNCONFIRMED    = 5,  ///< Running firmware has not been confirmed. Call confirmRunning(), then apply() again. The offer is kept.
-    OTA_REBOOT_PENDING = 6   ///< An update is flashed and waits for rebootForUpdate() (setAutoReboot(false)). Nothing was written.
+    OTA_REBOOT_PENDING = 6,  ///< An update is flashed and waits for rebootForUpdate() (setAutoReboot(false)). Nothing was written.
+    OTA_ROLLBACK_PENDING = 7 ///< A rolled_back report has not been accepted. The offer is kept. Nothing was flashed or reported.
 };
 
 /**
@@ -159,6 +160,11 @@ public:
      * waiting for rebootForUpdate(). Until that reboot, apply() returns
      * OTA_REBOOT_PENDING without downloading, because the next update slot
      * holds the waiting image.
+     *
+     * While a rolled_back report has not been accepted, apply() returns
+     * OTA_ROLLBACK_PENDING. The offer is kept. Nothing is flashed and
+     * nothing is reported. The trial record and the saved reason stay
+     * until the server accepts that report, and are cleared only then.
      *
      * @return An OTAResult code. On OTA_SUCCESS with auto-reboot enabled
      *         (default), this function does not return.
@@ -621,7 +627,7 @@ private:
     bool queueConfirmedReport(const String& deploymentId, uint32_t build);  ///< Queue the deferred "confirmed" POST.
     bool queueConfirmedReportFromNvs(); ///< queueConfirmedReport() from the saved sota_fail_* keys.
     void reportRolledBackIfPending();  ///< Attempt the deferred rolled_back POST.
-    void clearRolledBackReport();      ///< Drop the rolled_back report and its trial record.
+    void clearRolledBackReport();      ///< Drop an unreportable rolled_back record, including its reason.
     void reportConfirmedIfPending();   ///< Attempt the deferred confirmed POST.
 
     // Managed-mode state.

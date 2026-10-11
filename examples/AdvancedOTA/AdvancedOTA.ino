@@ -130,6 +130,12 @@ void setup() {
                 // An earlier apply() is waiting for rebootForUpdate().
                 Serial.println("[app] update already flashed; reboot to install it");
                 break;
+            case OTA_ROLLBACK_PENDING:
+                // A rolled_back report has not been accepted. The offer is
+                // kept. check() retries the report; apply() can flash after
+                // the server accepts it.
+                Serial.println("[app] rollback report not accepted yet");
+                break;
         }
     } else {
         Serial.println("[app] no update offered");

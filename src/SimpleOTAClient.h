@@ -89,10 +89,10 @@
  * @brief Result codes returned by apply().
  */
 enum OTAResult {
-    OTA_SUCCESS        = 0,  ///< Firmware flashed and validated; reboot pending.
+    OTA_SUCCESS        = 0,  ///< Firmware flashed and validated. Auto-reboot restarts before this returns. With setAutoReboot(false), call rebootForUpdate().
     OTA_CHECKSUM_FAIL  = 1,  ///< Downloaded payload did not match expected SHA-256.
     OTA_FLASH_FAIL     = 2,  ///< Network or partition write failure.
-    OTA_NO_OFFER       = 3,  ///< apply() called without a successful preceding check().
+    OTA_NO_OFFER       = 3,  ///< No offer is stored, and no flashed update is waiting for rebootForUpdate().
     OTA_SIGNATURE_FAIL = 4,  ///< Ed25519 signature verification failed; image rejected before it was marked bootable.
     OTA_UNCONFIRMED    = 5,  ///< Running firmware has not been confirmed. Call confirmRunning(), then apply() again. The offer is kept.
     OTA_REBOOT_PENDING = 6   ///< An update is flashed and waits for rebootForUpdate() (setAutoReboot(false)). Nothing was written.
@@ -168,10 +168,11 @@ public:
     /**
      * @brief Manually post a status event to /api/v1/ota/status/.
      *
-     * Requires a deployment context populated by a successful check(). The
-     * context is retained through apply() for post-apply events (e.g.
-     * report("reboot") when auto-reboot is disabled), and is cleared on the
-     * next check() invocation.
+     * Requires a deployment context. While a flashed update waits for
+     * rebootForUpdate(), report() uses that flashed deployment. check()
+     * clears the current offer and does not install a new one during that
+     * wait. Otherwise report() uses the offer from the latest check(), and
+     * the next check() clears it.
      *
      * @param event   Event name string (e.g. "reboot").
      * @param reason  Optional reason string. nullptr = field omitted.
@@ -198,8 +199,9 @@ public:
      *
      * When true (default), apply() calls esp_restart() after a successful flash.
      * When false, apply() returns OTA_SUCCESS and the caller is responsible for
-     * rebooting at a convenient time. The "validated" status event is reported
-     * before reboot in either case.
+     * rebooting at a convenient time. Until rebootForUpdate(), a later apply()
+     * returns OTA_REBOOT_PENDING and does not download. The "validated" status
+     * event is reported before reboot in either case.
      *
      * @param enabled  true = auto-reboot (default); false = caller-managed reboot.
      */
@@ -213,10 +215,10 @@ public:
      * (best-effort; the function does not block on network failure beyond the
      * normal HTTPClient timeout), then calls esp_restart(). Does not return.
      *
-     * Must be called in the post-apply window: between a successful apply()
-     * and the next check(). Outside that window the deployment context has
-     * been cleared and the status POST is skipped, but the device still
-     * reboots.
+     * The reboot event uses the deployment that was flashed. A later check()
+     * does not replace that deployment and does not install a new offer
+     * while the reboot is still pending. If this is called with no flashed
+     * deployment, the status POST is skipped and the device still reboots.
      */
     void rebootForUpdate();
 
@@ -552,7 +554,9 @@ private:
     const char* _channel;          ///< nullptr = field omitted.
     const char* _caCert;           ///< nullptr = setInsecure().
     bool        _autoReboot;
-    bool        _rebootPending;    ///< apply() flashed an image that waits for a reboot.
+    bool        _rebootPending;        ///< A flashed image is waiting for rebootForUpdate().
+    String      _rebootDeploymentId;   ///< Deployment id of that image. check() does not clear it.
+    uint32_t    _rebootBuildNumber;    ///< Build number of that image.
 
     // Pending offer from check(). _hasOffer guards apply().
     bool     _hasOffer;
@@ -607,7 +611,8 @@ private:
 
     // Rollback internals.
     void processBootValidation();
-    void snapshotPreOtaState();        ///< Called from apply() before esp_restart().
+    void snapshotPreOtaState();        ///< Called from apply() before the trial record is written.
+    void persistPostFlashRecord();     ///< Save the new trial without dropping an unsent rolled_back.
     void performRollback();            ///< NVS boot-partition fallback. Does not return.
     void rollbackExpiredTrial();       ///< Bootloader rollback, then performRollback() if that returns.
     void clearTrialState();            ///< Wipe trial snapshot keys only (sota_trial, sota_prev_*). Does NOT touch sota_fail_* or sota_conf_pend.

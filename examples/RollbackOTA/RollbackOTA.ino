@@ -65,15 +65,14 @@ void setup() {
 }
 
 void loop() {
-    // Run the application's health gate exactly once per boot. confirmRunning()
-    // is a no-op when no trial is in progress, so calling it on a normal boot
-    // is harmless. ota.isTrialInstall() lets you skip the work entirely when
-    // there's nothing to confirm.
+    // Confirm once the health gate passes. A failed confirmRunning() leaves
+    // the trial running, so try again on a later pass. isTrialInstall() is
+    // false when there is nothing to confirm.
     if (!confirmed && ota.isTrialInstall() && applicationHealthy()) {
         if (ota.confirmRunning()) {
             Serial.println("[app] trial confirmed");
+            confirmed = true;
         }
-        confirmed = true;
     }
 
     delay(1000);

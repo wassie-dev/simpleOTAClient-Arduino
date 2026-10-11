@@ -68,7 +68,8 @@ void loop() {
 
     if (ota.check()) {
         OTAResult r = ota.apply();   // reboots on success by default
-        if (r != OTA_SUCCESS) {
+        // OTA_UNCONFIRMED and OTA_REBOOT_PENDING mean the update is waiting.
+        if (r != OTA_SUCCESS && r != OTA_UNCONFIRMED && r != OTA_REBOOT_PENDING) {
             Serial.println("[app] OTA failed, continuing");
         }
     }

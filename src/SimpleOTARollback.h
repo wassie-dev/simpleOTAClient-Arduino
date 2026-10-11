@@ -242,6 +242,101 @@ static inline const char* sotaReportRollbackReason(const char* stored)
     return "reset";
 }
 
+/**
+ * apply() while a flashed image is waiting for rebootForUpdate().
+ * The pending reboot is decided before the missing-offer case, so a
+ * second apply() with no new offer still returns the pending result.
+ */
+typedef enum SotaApplyGuard {
+    SOTA_APPLY_REBOOT_PENDING = 1,
+    SOTA_APPLY_NO_OFFER = 2,
+    SOTA_APPLY_PROCEED = 3,
+} SotaApplyGuard;
+
+static inline SotaApplyGuard sotaApplyGuard(bool rebootPending, bool hasOffer)
+{
+    if (rebootPending) return SOTA_APPLY_REBOOT_PENDING;
+    if (!hasOffer) return SOTA_APPLY_NO_OFFER;
+    return SOTA_APPLY_PROCEED;
+}
+
+/** check() stores a new offer only when no flashed image is waiting. */
+static inline bool sotaCheckMayInstallOffer(bool rebootPending)
+{
+    return !rebootPending;
+}
+
+/**
+ * Deployment used for the reboot event. While a reboot is pending this is
+ * the flashed deployment, which is a different slot from the current offer.
+ * The pointers are the ones passed in.
+ */
+typedef struct SotaStatusTarget {
+    const char* deploymentId;
+    uint32_t buildNumber;
+} SotaStatusTarget;
+
+static inline SotaStatusTarget sotaStatusTarget(
+    bool rebootPending,
+    const char* rebootDeploymentId,
+    uint32_t rebootBuild,
+    const char* offerDeploymentId,
+    uint32_t offerBuild)
+{
+    SotaStatusTarget target;
+    if (rebootPending && rebootDeploymentId && rebootDeploymentId[0] != '\0') {
+        target.deploymentId = rebootDeploymentId;
+        target.buildNumber = rebootBuild;
+        return target;
+    }
+    target.deploymentId = offerDeploymentId ? offerDeploymentId : "";
+    target.buildNumber = offerBuild;
+    return target;
+}
+
+/**
+ * What apply() does with the trial record and an unsent rolled_back.
+ *
+ * SOTA_NVS_ARM_TRIAL       Write the new trial (or confirm record). Leave
+ *                          sota_rb_why in place.
+ * SOTA_NVS_STASH_AND_ARM   The unsent report is in the primary keys and the
+ *                          side slot is free. Copy it aside, then write the
+ *                          new trial. Leave sota_rb_why in place.
+ * SOTA_NVS_KEEP            The new trial is already stored, or writing would
+ *                          replace an unsent report that has nowhere to go.
+ */
+typedef enum SotaApplyNvsPlan {
+    SOTA_NVS_ARM_TRIAL = 1,
+    SOTA_NVS_STASH_AND_ARM = 2,
+    SOTA_NVS_KEEP = 3,
+} SotaApplyNvsPlan;
+
+static inline SotaApplyNvsPlan sotaPlanApplyNvs(
+    bool unsentInPrimary,
+    bool newTrialPresent,
+    bool stashOccupied)
+{
+    if (newTrialPresent) return SOTA_NVS_KEEP;
+    if (unsentInPrimary && stashOccupied) return SOTA_NVS_KEEP;
+    if (unsentInPrimary) return SOTA_NVS_STASH_AND_ARM;
+    return SOTA_NVS_ARM_TRIAL;
+}
+
+/** sota_rb_why is removed when the rolled_back report was accepted. */
+static inline bool sotaClearRollbackReason(bool reportAccepted)
+{
+    return reportAccepted;
+}
+
+/**
+ * Accepting a stashed rolled_back leaves the new trial record in the
+ * primary keys. Accepting the primary report clears that trial.
+ */
+static inline bool sotaClearTrialOnRollbackAccept(bool reportedFromStash)
+{
+    return !reportedFromStash;
+}
+
 /*
  * The chip watchdog is armed from SimpleOTAWdt.c, which is C. On Arduino
  * core 2.0.17 the S2 and C3 mwdt_ll.h header does not compile as C++.

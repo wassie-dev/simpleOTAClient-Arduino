@@ -17,6 +17,8 @@
  *    signature, malformed PEM, non-Ed25519 DER.
  *  - Chunk-boundary invariance: 1-byte streaming == one-shot.
  *  - Two-key rotation acceptance (correct key in either slot).
+ *  - Reboot-pending apply/check decisions, and when an unsent rolled_back
+ *    may be cleared.
  */
 
 #include <stdio.h>
@@ -354,6 +356,60 @@ int main(void) {
           "the report sends the reason saved when the rollback was detected");
     CHECK(strcmp(sotaReportRollbackReason(""), "reset") == 0,
           "a missing saved reason is not taken from a later boot");
+
+    // Reboot-pending: the flag is checked before a missing offer, and a
+    // new offer is not installed while a flashed image is waiting.
+    CHECK(sotaApplyGuard(true, false) == SOTA_APPLY_REBOOT_PENDING,
+          "apply with no offer still returns reboot pending");
+    CHECK(sotaApplyGuard(true, true) == SOTA_APPLY_REBOOT_PENDING,
+          "apply does not flash a new offer while reboot is pending");
+    CHECK(sotaApplyGuard(false, false) == SOTA_APPLY_NO_OFFER,
+          "apply with no offer and no pending reboot");
+    CHECK(sotaApplyGuard(false, true) == SOTA_APPLY_PROCEED,
+          "apply proceeds when an offer is present");
+    CHECK(!sotaCheckMayInstallOffer(true),
+          "check does not install an offer while reboot is pending");
+    CHECK(sotaCheckMayInstallOffer(false),
+          "check installs an offer when no reboot is pending");
+    {
+        const SotaStatusTarget pending = sotaStatusTarget(
+            true, "flashed-dep", 9, "newer-offer", 10);
+        CHECK(strcmp(pending.deploymentId, "flashed-dep") == 0
+                  && pending.buildNumber == 9,
+              "reboot event keeps the flashed deployment, not the new offer");
+        const SotaStatusTarget idle = sotaStatusTarget(
+            false, "flashed-dep", 9, "current-offer", 4);
+        CHECK(strcmp(idle.deploymentId, "current-offer") == 0
+                  && idle.buildNumber == 4,
+              "without a pending reboot the current offer is the status target");
+        const SotaStatusTarget fallback = sotaStatusTarget(
+            true, "", 9, "current-offer", 4);
+        CHECK(strcmp(fallback.deploymentId, "current-offer") == 0,
+              "an empty reboot slot falls back to the current offer");
+    }
+
+    // sota_rb_why is cleared only after the report is accepted. An unsent
+    // report is not overwritten, and neither is a new trial record.
+    CHECK(!sotaClearRollbackReason(false),
+          "a rejected rolled_back leaves sota_rb_why in place");
+    CHECK(sotaClearRollbackReason(true),
+          "an accepted rolled_back clears sota_rb_why");
+    CHECK(sotaPlanApplyNvs(true, false, false) == SOTA_NVS_STASH_AND_ARM,
+          "an unsent rolled_back is copied aside before the new trial is written");
+    CHECK(sotaPlanApplyNvs(true, true, false) == SOTA_NVS_KEEP,
+          "a new trial record is not overwritten");
+    CHECK(sotaPlanApplyNvs(true, false, true) == SOTA_NVS_KEEP,
+          "an unsent report that already fills both slots is left in place");
+    CHECK(sotaPlanApplyNvs(false, true, true) == SOTA_NVS_KEEP,
+          "a stored new trial is kept when a stashed report also exists");
+    CHECK(sotaPlanApplyNvs(false, false, true) == SOTA_NVS_ARM_TRIAL,
+          "a free primary slot can hold the new trial while the stash stays");
+    CHECK(sotaPlanApplyNvs(false, false, false) == SOTA_NVS_ARM_TRIAL,
+          "a normal apply writes the new trial");
+    CHECK(!sotaClearTrialOnRollbackAccept(true),
+          "accepting a stashed rolled_back does not clear the new trial");
+    CHECK(sotaClearTrialOnRollbackAccept(false),
+          "accepting the primary rolled_back clears that trial");
 
     printf("===========================\n");
     if (g_failures) {

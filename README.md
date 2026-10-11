@@ -137,7 +137,8 @@ To be notified of errors (with the default `setAutoReboot(true)`, successful upd
 
 ```cpp
 ota.begin(3600, [](OTAResult r) {
-    if (r != OTA_SUCCESS)
+    // OTA_UNCONFIRMED and OTA_REBOOT_PENDING mean the update is waiting.
+    if (r != OTA_SUCCESS && r != OTA_UNCONFIRMED && r != OTA_REBOOT_PENDING)
         Serial.printf("OTA failed: %d\n", r);
 });
 ```
@@ -150,7 +151,8 @@ Call `check()` and `apply()` from your own loop or FreeRTOS task for full contro
 void loop() {
     if (ota.check()) {
         OTAResult r = ota.apply();   // reboots on success
-        if (r != OTA_SUCCESS) {
+        // OTA_UNCONFIRMED and OTA_REBOOT_PENDING mean the update is waiting.
+        if (r != OTA_SUCCESS && r != OTA_UNCONFIRMED && r != OTA_REBOOT_PENDING) {
             Serial.println("[app] OTA failed, continuing");
         }
     }
@@ -231,10 +233,10 @@ Executes the offer stored by the most recent successful `check()`.
 | `OTA_SUCCESS` | The firmware was flashed and the build number was saved. With `setAutoReboot(true)`, which is the default, the device reboots before your code sees this value. With `setAutoReboot(false)`, your code is responsible for the reboot. |
 | `OTA_CHECKSUM_FAIL` | The downloaded payload did not match the expected SHA-256, so the partition was **not** committed. It is safe to retry. |
 | `OTA_FLASH_FAIL` | A network or flash write error stopped the update, and the partition was not committed. |
-| `OTA_NO_OFFER` | `check()` was not called first, or it returned `false`. |
+| `OTA_NO_OFFER` | `check()` was not called first, or it returned `false`, and no flashed update is waiting for `rebootForUpdate()`. |
 | `OTA_SIGNATURE_FAIL` | Ed25519 signature verification failed for a signed artifact, so the partition was **not** committed and a `failed` event with reason `signature_invalid` was reported. Treat this as a security signal. See [Signed firmware](#signed-firmware). |
 | `OTA_UNCONFIRMED` | The firmware running now has not been confirmed yet, so `apply()` does not flash the new image and does not report a failure to the server. The offer is kept, so call `confirmRunning()` and then call `apply()` again. |
-| `OTA_REBOOT_PENDING` | With `setAutoReboot(false)`, an earlier `apply()` flashed an update that is waiting for `rebootForUpdate()`. `apply()` writes nothing and reports nothing until that reboot, because the next update slot holds the waiting image. |
+| `OTA_REBOOT_PENDING` | With `setAutoReboot(false)`, an earlier `apply()` flashed an update that is waiting for `rebootForUpdate()`. Further `apply()` calls return this until that reboot, including when `check()` has no new offer. `apply()` writes nothing and reports nothing, because the next update slot holds the waiting image. |
 
 > **Note on `validated`:** this event is reported after `Update.end()` succeeds (meaning "the image was flashed cleanly"), not after a successful boot. A subsequent `reboot` event is emitted immediately before `esp_restart()` on the auto-reboot path; a `confirmed` event is emitted on the first 2xx `/check/` after a successful trial confirmation (see [Rollback](#rollback)).
 
@@ -277,7 +279,7 @@ ota.report("reboot");
 ESP.restart();
 ```
 
-Must be called in the post-apply window (between a successful `apply()` and the next `check()`); outside that window the status POST is silently skipped and the device still reboots.
+The reboot event uses the deployment that was flashed. A later `check()` does not replace that deployment and does not install a new offer while the reboot is still pending. If `rebootForUpdate()` is called with no flashed deployment, the status POST is skipped and the device still reboots.
 
 ---
 

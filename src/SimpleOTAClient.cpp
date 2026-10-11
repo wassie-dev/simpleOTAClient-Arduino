@@ -1297,6 +1297,9 @@ OTAResult SimpleOTAClient::apply() {
             p.putUChar (kNvsKeyConfirmPend, 1);
             if (_rollbackEnabled) {
                 p.putUChar(kNvsKeyTrial, 1);
+                // A new trial starts without a rollback reason. A reason left
+                // from an earlier rollback would be reported for this one.
+                p.remove(kNvsKeyRbWhy);
                 SOTA_LOG("apply: armed trial (timeout=%us deployment=%s)",
                          (unsigned)_confirmTimeoutSec, _deploymentId.c_str());
             } else {

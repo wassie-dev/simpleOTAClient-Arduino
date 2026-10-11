@@ -234,6 +234,7 @@ Executes the offer stored by the most recent successful `check()`.
 | `OTA_NO_OFFER` | `check()` was not called first, or it returned `false`. |
 | `OTA_SIGNATURE_FAIL` | Ed25519 signature verification failed for a signed artifact, so the partition was **not** committed and a `failed` event with reason `signature_invalid` was reported. Treat this as a security signal. See [Signed firmware](#signed-firmware). |
 | `OTA_UNCONFIRMED` | The firmware running now has not been confirmed yet, so `apply()` does not flash the new image and does not report a failure to the server. The offer is kept, so call `confirmRunning()` and then call `apply()` again. |
+| `OTA_REBOOT_PENDING` | With `setAutoReboot(false)`, an earlier `apply()` flashed an update that is waiting for `rebootForUpdate()`. `apply()` writes nothing and reports nothing until that reboot, because the next update slot holds the waiting image. |
 
 > **Note on `validated`:** this event is reported after `Update.end()` succeeds (meaning "the image was flashed cleanly"), not after a successful boot. A subsequent `reboot` event is emitted immediately before `esp_restart()` on the auto-reboot path; a `confirmed` event is emitted on the first 2xx `/check/` after a successful trial confirmation (see [Rollback](#rollback)).
 
@@ -263,7 +264,7 @@ Overrides the CA certificate used for HTTPS verification. By default the library
 
 ### `void setAutoReboot(bool enabled)`
 
-Default: `true`. When `false`, `apply()` returns `OTA_SUCCESS` without calling `esp_restart()`, giving the application control over when the reboot happens. The NVS build number write and `validated` event still occur before the function returns. The library does **not** emit a `reboot` event in this mode; use [`rebootForUpdate()`](#void-rebootforupdate) when the application is ready to restart so the server sees the same event sequence as the auto-reboot path.
+Default: `true`. When `false`, `apply()` returns `OTA_SUCCESS` without calling `esp_restart()`, giving the application control over when the reboot happens. The NVS build number write and `validated` event still occur before the function returns. The library does **not** emit a `reboot` event in this mode; use [`rebootForUpdate()`](#void-rebootforupdate) when the application is ready to restart so the server sees the same event sequence as the auto-reboot path. Until that reboot, further `apply()` calls return `OTA_REBOOT_PENDING` without downloading.
 
 ---
 

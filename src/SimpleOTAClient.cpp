@@ -493,6 +493,7 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _channel(nullptr),
       _caCert(SimpleOTAClient::kSimpleOtaRootCA),
       _autoReboot(true),
+      _rebootPending(false),
       _hasOffer(false),
       _size(0),
       _buildNumber(0),
@@ -1028,6 +1029,14 @@ OTAResult SimpleOTAClient::apply() {
         return OTA_NO_OFFER;
     }
 
+    // The next update slot counts from the running image. After a
+    // successful apply() without a reboot, that slot holds the waiting
+    // image, so writing it again would destroy that image.
+    if (_rebootPending) {
+        SOTA_LOG("apply: an update is waiting for rebootForUpdate(); not flashing");
+        return OTA_REBOOT_PENDING;
+    }
+
     // A new image is refused while the running one is still unconfirmed.
     // The offer stays. This is logged locally and not reported as a failed
     // update, because the running firmware has not failed.
@@ -1323,6 +1332,7 @@ OTAResult SimpleOTAClient::apply() {
         esp_restart();
         // not reached
     }
+    _rebootPending = true;
     return OTA_SUCCESS;
 }
 

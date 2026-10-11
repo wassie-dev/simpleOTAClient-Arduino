@@ -126,6 +126,10 @@ void setup() {
             case OTA_SIGNATURE_FAIL:
                 Serial.println("[app] signature rejected");
                 break;
+            case OTA_REBOOT_PENDING:
+                // An earlier apply() is waiting for rebootForUpdate().
+                Serial.println("[app] update already flashed; reboot to install it");
+                break;
         }
     } else {
         Serial.println("[app] no update offered");

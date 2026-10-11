@@ -94,7 +94,8 @@ enum OTAResult {
     OTA_FLASH_FAIL     = 2,  ///< Network or partition write failure.
     OTA_NO_OFFER       = 3,  ///< apply() called without a successful preceding check().
     OTA_SIGNATURE_FAIL = 4,  ///< Ed25519 signature verification failed; image rejected before it was marked bootable.
-    OTA_UNCONFIRMED    = 5   ///< Running firmware has not been confirmed. Call confirmRunning(), then apply() again. The offer is kept.
+    OTA_UNCONFIRMED    = 5,  ///< Running firmware has not been confirmed. Call confirmRunning(), then apply() again. The offer is kept.
+    OTA_REBOOT_PENDING = 6   ///< An update is flashed and waits for rebootForUpdate() (setAutoReboot(false)). Nothing was written.
 };
 
 /**
@@ -153,6 +154,11 @@ public:
      * server the update failed. Call confirmRunning() and then apply()
      * again. The library does not confirm a firmware just because a newer
      * one is available.
+     *
+     * With setAutoReboot(false), a successful apply() leaves the new image
+     * waiting for rebootForUpdate(). Until that reboot, apply() returns
+     * OTA_REBOOT_PENDING without downloading, because the next update slot
+     * holds the waiting image.
      *
      * @return An OTAResult code. On OTA_SUCCESS with auto-reboot enabled
      *         (default), this function does not return.
@@ -546,6 +552,7 @@ private:
     const char* _channel;          ///< nullptr = field omitted.
     const char* _caCert;           ///< nullptr = setInsecure().
     bool        _autoReboot;
+    bool        _rebootPending;    ///< apply() flashed an image that waits for a reboot.
 
     // Pending offer from check(). _hasOffer guards apply().
     bool     _hasOffer;

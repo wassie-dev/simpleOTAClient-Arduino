@@ -260,12 +260,6 @@ static inline SotaApplyGuard sotaApplyGuard(bool rebootPending, bool hasOffer)
     return SOTA_APPLY_PROCEED;
 }
 
-/** check() stores a new offer only when no flashed image is waiting. */
-static inline bool sotaCheckMayInstallOffer(bool rebootPending)
-{
-    return !rebootPending;
-}
-
 /**
  * Deployment used for the reboot event. While a reboot is pending this is
  * the flashed deployment, which is a different slot from the current offer.
@@ -295,46 +289,35 @@ static inline SotaStatusTarget sotaStatusTarget(
 }
 
 /**
- * What apply() does with the trial record and an unsent rolled_back.
+ * How a status POST ended, for reports that are retried until the server
+ * answers.
  *
- * SOTA_NVS_ARM_TRIAL       Write the new trial (or confirm record). Leave
- *                          sota_rb_why in place.
- * SOTA_NVS_STASH_AND_ARM   The unsent report is in the primary keys and the
- *                          side slot is free. Copy it aside, then write the
- *                          new trial. Leave sota_rb_why in place.
- * SOTA_NVS_KEEP            The new trial is already stored, or writing would
- *                          replace an unsent report that has nowhere to go.
+ * SOTA_STATUS_ACCEPTED  2xx with accepted=true.
+ * SOTA_STATUS_RETRY     No response, a 5xx, 401, 403, 408, or 429, or a
+ *                       2xx without an accepted field. Worth sending again.
+ * SOTA_STATUS_REJECTED  2xx with accepted=false, or any other 4xx. Sending
+ *                       the same report again gets the same answer.
  */
-typedef enum SotaApplyNvsPlan {
-    SOTA_NVS_ARM_TRIAL = 1,
-    SOTA_NVS_STASH_AND_ARM = 2,
-    SOTA_NVS_KEEP = 3,
-} SotaApplyNvsPlan;
+typedef enum SotaStatusOutcome {
+    SOTA_STATUS_ACCEPTED = 1,
+    SOTA_STATUS_RETRY = 2,
+    SOTA_STATUS_REJECTED = 3,
+} SotaStatusOutcome;
 
-static inline SotaApplyNvsPlan sotaPlanApplyNvs(
-    bool unsentInPrimary,
-    bool newTrialPresent,
-    bool stashOccupied)
+static inline SotaStatusOutcome sotaStatusOutcome(
+    int httpCode, bool hasAcceptedField, bool accepted)
 {
-    if (newTrialPresent) return SOTA_NVS_KEEP;
-    if (unsentInPrimary && stashOccupied) return SOTA_NVS_KEEP;
-    if (unsentInPrimary) return SOTA_NVS_STASH_AND_ARM;
-    return SOTA_NVS_ARM_TRIAL;
-}
-
-/** sota_rb_why is removed when the rolled_back report was accepted. */
-static inline bool sotaClearRollbackReason(bool reportAccepted)
-{
-    return reportAccepted;
-}
-
-/**
- * Accepting a stashed rolled_back leaves the new trial record in the
- * primary keys. Accepting the primary report clears that trial.
- */
-static inline bool sotaClearTrialOnRollbackAccept(bool reportedFromStash)
-{
-    return !reportedFromStash;
+    if (httpCode >= 200 && httpCode < 300) {
+        if (!hasAcceptedField) return SOTA_STATUS_RETRY;
+        return accepted ? SOTA_STATUS_ACCEPTED : SOTA_STATUS_REJECTED;
+    }
+    if (httpCode >= 400 && httpCode < 500) {
+        if (httpCode == 401 || httpCode == 403 || httpCode == 408 || httpCode == 429) {
+            return SOTA_STATUS_RETRY;
+        }
+        return SOTA_STATUS_REJECTED;
+    }
+    return SOTA_STATUS_RETRY;
 }
 
 /*

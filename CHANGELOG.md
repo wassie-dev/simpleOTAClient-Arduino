@@ -6,6 +6,9 @@
 - Polling sketches must call `confirmRunning()` within the confirm time. A sketch that first calls the library hours after boot is reset by the chip watchdog and switched back. AdvancedOTA calls `confirmRunning()` from `setup()`, BasicOTA at the top of `loop()`, and RollbackOTA once its health check passes.
 - `apply()` returns `OTA_UNCONFIRMED` while the running firmware is unconfirmed. It does not send a `failed` event, and the offer is kept.
 - With `setAutoReboot(false)`, `apply()` returns `OTA_REBOOT_PENDING` while a flashed update waits for `rebootForUpdate()`, and does not download. A second download could overwrite the waiting update, and if it was cut off, the next boot reported that update as rolled back.
+- While a `rolled_back` report is unsent, `check()` takes no update. The report is dropped once the server accepts it, or rejects it with `accepted: false` or a 4xx other than 401, 403, 408, and 429.
+- While an update waits for `rebootForUpdate()`, `check()` takes no new offer, and `report()` and `rebootForUpdate()` keep using the flashed deployment.
+- An accepted `confirmed` report clears its NVS keys only while they still name that deployment.
 - `rolled_back` reports carry the reason saved when the rollback was detected: `confirm_timeout`, or the reset reason such as `panic`, `watchdog`, or `brownout`.
 - Images written by ArduinoOTA or HTTPUpdate are accepted by the Arduino core on boot, because this library only holds a firmware unconfirmed when it wrote its own trial record.
 - `-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` and `-DSIMPLEOTA_DISABLE_TRIAL_WATCHDOG` turn the bootloader switch-back and the chip watchdog off. See the README section Opting out.

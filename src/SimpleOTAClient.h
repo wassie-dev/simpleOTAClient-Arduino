@@ -599,6 +599,8 @@ private:
     bool sendStatus(const char* event, const char* reason);
     bool sendStatusFor(const char* event, const char* reason,
                        const char* deploymentId, uint32_t buildNumber);
+    int  statusOutcomeFor(const char* event, const char* reason,
+                          const char* deploymentId, uint32_t buildNumber);  ///< A SotaStatusOutcome.
     uint32_t readBuildNumber();
     void     writeBuildNumber(uint32_t n);
     String   readHashFromNvs();
@@ -612,13 +614,14 @@ private:
     // Rollback internals.
     void processBootValidation();
     void snapshotPreOtaState();        ///< Called from apply() before the trial record is written.
-    void persistPostFlashRecord();     ///< Save the new trial without dropping an unsent rolled_back.
+    void persistTrialRecord();         ///< Save the confirm context and arm the trial after a flash.
     void performRollback();            ///< NVS boot-partition fallback. Does not return.
     void rollbackExpiredTrial();       ///< Bootloader rollback, then performRollback() if that returns.
     void clearTrialState();            ///< Wipe trial snapshot keys only (sota_trial, sota_prev_*). Does NOT touch sota_fail_* or sota_conf_pend.
     bool queueConfirmedReport(const String& deploymentId, uint32_t build);  ///< Queue the deferred "confirmed" POST.
     bool queueConfirmedReportFromNvs(); ///< queueConfirmedReport() from the saved sota_fail_* keys.
     void reportRolledBackIfPending();  ///< Attempt the deferred rolled_back POST.
+    void clearRolledBackReport();      ///< Drop the rolled_back report and its trial record.
     void reportConfirmedIfPending();   ///< Attempt the deferred confirmed POST.
 
     // Managed-mode state.

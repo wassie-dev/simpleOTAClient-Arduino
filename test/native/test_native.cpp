@@ -17,8 +17,8 @@
  *    signature, malformed PEM, non-Ed25519 DER.
  *  - Chunk-boundary invariance: 1-byte streaming == one-shot.
  *  - Two-key rotation acceptance (correct key in either slot).
- *  - Reboot-pending apply/check decisions, and when an unsent rolled_back
- *    may be cleared.
+ *  - Reboot-pending apply decisions, the reboot event's deployment, and
+ *    when a retried status report is dropped.
  */
 
 #include <stdio.h>
@@ -367,10 +367,6 @@ int main(void) {
           "apply with no offer and no pending reboot");
     CHECK(sotaApplyGuard(false, true) == SOTA_APPLY_PROCEED,
           "apply proceeds when an offer is present");
-    CHECK(!sotaCheckMayInstallOffer(true),
-          "check does not install an offer while reboot is pending");
-    CHECK(sotaCheckMayInstallOffer(false),
-          "check installs an offer when no reboot is pending");
     {
         const SotaStatusTarget pending = sotaStatusTarget(
             true, "flashed-dep", 9, "newer-offer", 10);
@@ -388,28 +384,29 @@ int main(void) {
               "an empty reboot slot falls back to the current offer");
     }
 
-    // sota_rb_why is cleared only after the report is accepted. An unsent
-    // report is not overwritten, and neither is a new trial record.
-    CHECK(!sotaClearRollbackReason(false),
-          "a rejected rolled_back leaves sota_rb_why in place");
-    CHECK(sotaClearRollbackReason(true),
-          "an accepted rolled_back clears sota_rb_why");
-    CHECK(sotaPlanApplyNvs(true, false, false) == SOTA_NVS_STASH_AND_ARM,
-          "an unsent rolled_back is copied aside before the new trial is written");
-    CHECK(sotaPlanApplyNvs(true, true, false) == SOTA_NVS_KEEP,
-          "a new trial record is not overwritten");
-    CHECK(sotaPlanApplyNvs(true, false, true) == SOTA_NVS_KEEP,
-          "an unsent report that already fills both slots is left in place");
-    CHECK(sotaPlanApplyNvs(false, true, true) == SOTA_NVS_KEEP,
-          "a stored new trial is kept when a stashed report also exists");
-    CHECK(sotaPlanApplyNvs(false, false, true) == SOTA_NVS_ARM_TRIAL,
-          "a free primary slot can hold the new trial while the stash stays");
-    CHECK(sotaPlanApplyNvs(false, false, false) == SOTA_NVS_ARM_TRIAL,
-          "a normal apply writes the new trial");
-    CHECK(!sotaClearTrialOnRollbackAccept(true),
-          "accepting a stashed rolled_back does not clear the new trial");
-    CHECK(sotaClearTrialOnRollbackAccept(false),
-          "accepting the primary rolled_back clears that trial");
+    // A retried report is dropped only when sending it again cannot help.
+    CHECK(sotaStatusOutcome(200, true, true) == SOTA_STATUS_ACCEPTED,
+          "2xx accepted=true is accepted");
+    CHECK(sotaStatusOutcome(200, true, false) == SOTA_STATUS_REJECTED,
+          "2xx accepted=false is a final rejection");
+    CHECK(sotaStatusOutcome(200, false, false) == SOTA_STATUS_RETRY,
+          "2xx without an accepted field is retried");
+    CHECK(sotaStatusOutcome(404, false, false) == SOTA_STATUS_REJECTED,
+          "404 is a final rejection");
+    CHECK(sotaStatusOutcome(400, false, false) == SOTA_STATUS_REJECTED,
+          "400 is a final rejection");
+    CHECK(sotaStatusOutcome(401, false, false) == SOTA_STATUS_RETRY,
+          "401 is retried: the token may be fixed");
+    CHECK(sotaStatusOutcome(403, false, false) == SOTA_STATUS_RETRY,
+          "403 is retried: the token may be fixed");
+    CHECK(sotaStatusOutcome(408, false, false) == SOTA_STATUS_RETRY,
+          "408 is retried");
+    CHECK(sotaStatusOutcome(429, false, false) == SOTA_STATUS_RETRY,
+          "429 is retried");
+    CHECK(sotaStatusOutcome(503, false, false) == SOTA_STATUS_RETRY,
+          "5xx is retried");
+    CHECK(sotaStatusOutcome(-1, false, false) == SOTA_STATUS_RETRY,
+          "no response is retried");
 
     printf("===========================\n");
     if (g_failures) {

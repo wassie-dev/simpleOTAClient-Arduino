@@ -236,10 +236,6 @@ static const char* kNvsKeyFailDep     = "sota_fail_dep";    // string
 static const char* kNvsKeyFailBuild   = "sota_fail_build";  // uint32
 static const char* kNvsKeyConfirmPend = "sota_conf_pend";   // uint8: 1 if a "confirmed" report is pending
 static const char* kNvsKeyRbWhy       = "sota_rb_why";      // reason for the next rolled_back report
-// Side copy of an unsent rolled_back. The primary keys can then hold the
-// new trial. The reason stays in sota_rb_why until the report is accepted.
-static const char* kNvsKeyRbDep       = "sota_rb_dep";      // string
-static const char* kNvsKeyRbBld       = "sota_rb_bld";      // uint32
 
 uint32_t SimpleOTAClient::readBuildNumber() {
     Preferences p;
@@ -831,6 +827,14 @@ bool SimpleOTAClient::check() {
     // is stored separately and stays in place.
     clearOffer();
 
+    // A new trial would reuse the NVS keys the unsent rolled_back report is
+    // read from, so no update is taken until the server has answered it.
+    if (_rolledBackPending) {
+        _lastCheckOk = false;
+        SOTA_LOG("check: rolled_back report not delivered yet; not checking for updates");
+        return false;
+    }
+
     uint32_t currentBuild = readBuildNumber();
     SOTA_LOG("check: current_build_number=%u", (unsigned)currentBuild);
 
@@ -903,7 +907,7 @@ bool SimpleOTAClient::check() {
         return false;
     }
 
-    if (!sotaCheckMayInstallOffer(_rebootPending)) {
+    if (_rebootPending) {
         SOTA_LOG("check: reboot pending; not installing a new offer");
         return false;
     }
@@ -962,8 +966,8 @@ bool SimpleOTAClient::check() {
 // /api/v1/ota/status/
 // ---------------------------------------------------------------------------
 
-bool SimpleOTAClient::sendStatusFor(const char* event, const char* reason,
-                                    const char* deploymentId, uint32_t buildNumber) {
+int SimpleOTAClient::statusOutcomeFor(const char* event, const char* reason,
+                                      const char* deploymentId, uint32_t buildNumber) {
     // Log the event name + deployment context BEFORE the network call so
     // it's visible even if the POST hangs, and so callers can distinguish
     // back-to-back status posts in the trace (e.g. validated vs. reboot).
@@ -986,14 +990,17 @@ bool SimpleOTAClient::sendStatusFor(const char* event, const char* reason,
 
     String resp;
     int code = postJson("/api/v1/ota/status/", body, &resp);
-    if (code < 200 || code >= 300) {
-        SOTA_LOG("status: event=%s rejected (http=%d)", event, code);
-        return false;
-    }
     bool accepted = false;
-    jsonGetBool(resp, "accepted", accepted);
-    SOTA_LOG("status: event=%s accepted=%d", event, accepted ? 1 : 0);
-    return accepted;
+    const bool hasAccepted = (code >= 200 && code < 300)
+        && jsonGetBool(resp, "accepted", accepted);
+    SOTA_LOG("status: event=%s http=%d accepted=%d", event, code, accepted ? 1 : 0);
+    return sotaStatusOutcome(code, hasAccepted, accepted);
+}
+
+bool SimpleOTAClient::sendStatusFor(const char* event, const char* reason,
+                                    const char* deploymentId, uint32_t buildNumber) {
+    return statusOutcomeFor(event, reason, deploymentId, buildNumber)
+        == SOTA_STATUS_ACCEPTED;
 }
 
 bool SimpleOTAClient::sendStatus(const char* event, const char* reason) {
@@ -1283,8 +1290,10 @@ OTAResult SimpleOTAClient::apply() {
         return OTA_FLASH_FAIL;
     }
 
-    sendStatus("flashed", nullptr);
-
+    // Update.end() has made the new image bootable. Save the trial record
+    // before any network call, so a power cut leaves the shortest possible
+    // window in which the new image would boot without its trial.
+    //
     // Snapshot the OUTGOING image's identity before we overwrite NVS, so a
     // post-apply rollback can restore it. Reads from NVS read what was just
     // written by the PREVIOUS apply() (or the factory defaults). Must happen
@@ -1297,13 +1306,13 @@ OTAResult SimpleOTAClient::apply() {
     writeBuildNumber(_buildNumber);
     writeHashToNvs(hex);
     writeVersionToNvs(_offeredVersion.c_str());
-    sendStatus("validated", nullptr);
 
-    // Persist the confirm context and, when rollback is enabled, the trial
-    // flag. An unsent rolled_back is copied aside first. sota_rb_why stays
-    // until that report is accepted. processBootValidation() on the next
-    // boot reads the trial flag.
-    persistPostFlashRecord();
+    // The confirm context and, when rollback is enabled, the trial flag.
+    // processBootValidation() on the next boot reads them.
+    persistTrialRecord();
+
+    sendStatus("flashed", nullptr);
+    sendStatus("validated", nullptr);
 
     // The download fields are cleared so they are not still an offer.
     // _deploymentId and _buildNumber stay for the auto-reboot status post.
@@ -1332,50 +1341,26 @@ OTAResult SimpleOTAClient::apply() {
     return OTA_SUCCESS;
 }
 
-// Save the deployment that was just flashed. An unsent rolled_back keeps
-// its own keys, and a trial record that is already stored for this
-// deployment is left as it is. sota_rb_why is not removed here.
-void SimpleOTAClient::persistPostFlashRecord() {
+// Save the confirm context for the image apply() just flashed and, when
+// rollback is enabled, arm its trial. check() takes no offer while a
+// rolled_back report is unsent, so these keys do not hold one here.
+void SimpleOTAClient::persistTrialRecord() {
     Preferences p;
     if (!p.begin(kNvsNamespace, /*readOnly=*/false)) {
         SOTA_LOG("apply: NVS open failed; confirm/trial state not armed");
         return;
     }
-
-    const uint8_t trial = p.getUChar(kNvsKeyTrial, 0);
-    const String failDep = p.getString(kNvsKeyFailDep, "");
-    const bool stashOccupied = p.getString(kNvsKeyRbDep, "").length() > 0;
-    const bool newTrialPresent = (trial == 1 && failDep == _deploymentId);
-    const bool unsentInPrimary = !newTrialPresent && !stashOccupied
-        && (_rolledBackPending || trial == 2)
-        && failDep.length() > 0;
-    const SotaApplyNvsPlan plan = sotaPlanApplyNvs(
-        unsentInPrimary, newTrialPresent, stashOccupied);
-
-    if (plan == SOTA_NVS_KEEP) {
-        SOTA_LOG("apply: leaving the stored trial and rollback report in place");
-        p.end();
-        return;
-    }
-
-    if (plan == SOTA_NVS_STASH_AND_ARM) {
-        p.putString(kNvsKeyRbDep, failDep);
-        p.putUInt(kNvsKeyRbBld, p.getUInt(kNvsKeyFailBuild, 0));
-    }
-
-    p.putString(kNvsKeyFailDep, _deploymentId.c_str());
-    p.putUInt(kNvsKeyFailBuild, _buildNumber);
-    p.putUChar(kNvsKeyConfirmPend, 1);
+    p.putString(kNvsKeyFailDep,     _deploymentId.c_str());
+    p.putUInt  (kNvsKeyFailBuild,   _buildNumber);
+    p.putUChar (kNvsKeyConfirmPend, 1);
     if (_rollbackEnabled) {
+        // A new trial starts without a rollback reason. A reason left from
+        // an earlier rollback would be reported for this one.
+        p.remove(kNvsKeyRbWhy);
         p.putUChar(kNvsKeyTrial, 1);
         SOTA_LOG("apply: armed trial (timeout=%us deployment=%s)",
                  (unsigned)_confirmTimeoutSec, _deploymentId.c_str());
     } else {
-        // The unsent report is in the side keys. With rollback disabled
-        // there is no new trial, so the primary trial flag is cleared.
-        if (plan == SOTA_NVS_STASH_AND_ARM) {
-            p.putUChar(kNvsKeyTrial, 0);
-        }
         SOTA_LOG("apply: confirm pending (rollback disabled, deployment=%s)",
                  _deploymentId.c_str());
     }
@@ -1431,26 +1416,18 @@ void SimpleOTAClient::processBootValidation() {
     uint8_t  confirmPend = 0;
     String   pendDep;
     uint32_t pendBuild   = 0;
-    String   stashDep;
     if (nvsOpen) {
         trial       = p.getUChar (kNvsKeyTrial,       0);
         prevPart    = p.getUInt  (kNvsKeyPrevPart,    0);
         confirmPend = p.getUChar (kNvsKeyConfirmPend, 0);
         pendDep     = p.getString(kNvsKeyFailDep,     "");
         pendBuild   = p.getUInt  (kNvsKeyFailBuild,   0);
-        stashDep    = p.getString(kNvsKeyRbDep,       "");
         p.end();
     } else {
         // Read-only open fails when the namespace has never been written,
         // i.e. a device that has not completed an OTA yet. Expected. A
         // pending image with no trial record is still marked valid below.
         SOTA_LOG("bootval: no saved OTA state yet (fresh device)");
-    }
-
-    // An unsent rolled_back copied aside by apply() is still reported on
-    // this boot, including when the primary keys now hold a new trial.
-    if (stashDep.length()) {
-        _rolledBackPending = true;
     }
 
     const bool runningMatchesPrev = (prevPart != 0 && runningAddr == prevPart);
@@ -1715,12 +1692,10 @@ void SimpleOTAClient::performRollback() {
 }
 
 // Wipe the trial snapshot NVS keys (trial flag + prev_* image identity).
-// Does not touch the fail_* / conf_pend keys or a stashed rolled_back
-// (sota_rb_dep, sota_rb_bld, sota_rb_why). Those hold a report that has
-// not been accepted yet. reportConfirmedIfPending() removes the confirm
-// keys after "confirmed" is accepted. reportRolledBackIfPending() removes
-// the primary fail keys when that report is accepted, and removes the
-// stash and sota_rb_why when the stashed report is accepted.
+// Does NOT touch the fail_* / conf_pend / rb_why keys: those carry the
+// confirm/rollback POST context and must survive until the server answers
+// the report, so the event can be retried across reboots.
+// reportConfirmedIfPending() and reportRolledBackIfPending() remove them.
 void SimpleOTAClient::clearTrialState() {
     Preferences p;
     if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return;
@@ -1793,81 +1768,54 @@ bool SimpleOTAClient::confirmRunning() {
 }
 
 // Report a rolled_back event if one is pending. Called from check() before
-// the offer is stored. A stashed report is sent first. Accepting it removes
-// sota_rb_why and the side keys, and leaves the new trial record. Accepting
-// the primary report clears that trial.
+// any offer is taken. The report and its NVS keys are cleared once the
+// server accepts it, or rejects it in a way a retry would not change.
 void SimpleOTAClient::reportRolledBackIfPending() {
     if (!_rolledBackPending) return;
 
     Preferences p;
     if (!p.begin(kNvsNamespace, /*readOnly=*/true)) return;
-    const String stashDep   = p.getString(kNvsKeyRbDep, "");
-    const uint32_t stashBuild = p.getUInt(kNvsKeyRbBld, 0);
-    const String failDep   = p.getString(kNvsKeyFailDep, "");
-    const uint32_t failBuild = p.getUInt(kNvsKeyFailBuild, 0);
-    const String storedWhy = p.getString(kNvsKeyRbWhy, "");
-    const uint8_t trial    = p.getUChar(kNvsKeyTrial, 0);
+    String   failDep   = p.getString(kNvsKeyFailDep, "");
+    uint32_t failBuild = p.getUInt  (kNvsKeyFailBuild, 0);
+    String   storedWhy = p.getString(kNvsKeyRbWhy, "");
     p.end();
 
-    const bool fromStash = stashDep.length() > 0;
-    const String dep = fromStash ? stashDep : failDep;
-    const uint32_t build = fromStash ? stashBuild : failBuild;
-
-    if (dep.isEmpty() || build == 0) {
-        // No deployment can be reported, so this boot stops retrying.
-        // The orphan primary reason is dropped with that record. A report
-        // that still has a deployment keeps sota_rb_why until accepted.
+    if (failDep.isEmpty() || failBuild == 0) {
+        // Nothing usable to report; clear everything so we don't loop forever.
         SOTA_LOG("rolled_back: no failure context; clearing");
-        if (sotaClearTrialOnRollbackAccept(fromStash)) {
-            clearTrialState();
-        }
-        Preferences pf;
-        if (pf.begin(kNvsNamespace, /*readOnly=*/false)) {
-            if (fromStash) {
-                pf.remove(kNvsKeyRbDep);
-                pf.remove(kNvsKeyRbBld);
-            } else {
-                pf.remove(kNvsKeyFailDep);
-                pf.remove(kNvsKeyFailBuild);
-                pf.remove(kNvsKeyConfirmPend);
-                pf.remove(kNvsKeyRbWhy);
-            }
-            pf.end();
-        }
-        _rolledBackPending = false;
+        clearRolledBackReport();
         return;
     }
 
     // Saved when the rollback was detected. Do not read this boot's reset
     // reason: a retry after a later reboot would report that later reset.
     const char* reason = sotaReportRollbackReason(storedWhy.c_str());
-    const bool ok = sendStatusFor("rolled_back", reason, dep.c_str(), build);
-    if (!ok) {
-        SOTA_LOG("rolled_back: server did not accept; will retry");
+    const int outcome = statusOutcomeFor(
+        "rolled_back", reason, failDep.c_str(), failBuild);
+    if (outcome == SOTA_STATUS_RETRY) {
+        SOTA_LOG("rolled_back: no answer from the server; will retry");
         return;
     }
-
-    SOTA_LOG("rolled_back: server acknowledged");
-    if (sotaClearTrialOnRollbackAccept(fromStash)) {
-        clearTrialState();
+    if (outcome == SOTA_STATUS_ACCEPTED) {
+        SOTA_LOG("rolled_back: server acknowledged");
+    } else {
+        SOTA_LOG("rolled_back: server rejected the report; dropping it");
     }
+    clearRolledBackReport();
+}
+
+// Drop the rolled_back report and the trial record it came from.
+void SimpleOTAClient::clearRolledBackReport() {
+    clearTrialState();
     Preferences pf;
     if (pf.begin(kNvsNamespace, /*readOnly=*/false)) {
-        if (fromStash) {
-            pf.remove(kNvsKeyRbDep);
-            pf.remove(kNvsKeyRbBld);
-        } else {
-            pf.remove(kNvsKeyFailDep);
-            pf.remove(kNvsKeyFailBuild);
-            pf.remove(kNvsKeyConfirmPend);
-        }
-        if (sotaClearRollbackReason(true)) {
-            pf.remove(kNvsKeyRbWhy);
-        }
+        pf.remove(kNvsKeyFailDep);
+        pf.remove(kNvsKeyFailBuild);
+        pf.remove(kNvsKeyConfirmPend);
+        pf.remove(kNvsKeyRbWhy);
         pf.end();
     }
-    // A primary trial==2 is a separate rollback from the stashed report.
-    _rolledBackPending = fromStash && trial == 2;
+    _rolledBackPending = false;
 }
 
 // Report a confirmed event if one is pending. Called from check() on each
@@ -1886,14 +1834,21 @@ void SimpleOTAClient::reportConfirmedIfPending() {
                             _confirmedDep.c_str(), _confirmedBuild);
     if (ok) {
         SOTA_LOG("confirmed: server acknowledged");
+        const String   dep   = _confirmedDep;
+        const uint32_t build = _confirmedBuild;
         _confirmedPending = false;
         _confirmedDep     = "";
         _confirmedBuild   = 0;
+        // The keys may already describe a newer apply() that waits for its
+        // reboot. Remove them only while they still name this deployment.
         Preferences p;
         if (p.begin(kNvsNamespace, /*readOnly=*/false)) {
-            p.remove(kNvsKeyConfirmPend);
-            p.remove(kNvsKeyFailDep);
-            p.remove(kNvsKeyFailBuild);
+            if (p.getString(kNvsKeyFailDep, "") == dep &&
+                p.getUInt(kNvsKeyFailBuild, 0) == build) {
+                p.remove(kNvsKeyConfirmPend);
+                p.remove(kNvsKeyFailDep);
+                p.remove(kNvsKeyFailBuild);
+            }
             p.end();
         }
     } else {

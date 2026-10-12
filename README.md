@@ -546,6 +546,8 @@ The stock Arduino-ESP32 bootloader can switch back to the previous firmware by i
 
 A sketch cannot define its own `verifyRollbackLater()` alongside the library. Build with `-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` to leave the core's behaviour alone; the confirm timer then remains the only rollback. See [Limitations](#limitations).
 
+A hang that also stops the FreeRTOS confirm timer is caught by the chip's own watchdog (the RTC or LP watchdog, which runs on the slow clock). It starts in `verifyRollbackLater()` before `setup()` for the compile-time `SIMPLEOTA_CONFIRM_TIMEOUT_S`, restarts with this instance's confirm time when the library first runs, and stops on `confirmRunning()`. It waits for the confirm time plus a margin, the larger of `SIMPLEOTA_TRIAL_WDT_MARGIN_S` (60 s) and 10 percent. When it fires, the chip resets, the bootloader returns to the previous firmware, and the report says `watchdog`. So call `confirmRunning()` within the confirm time, and if your bring-up before the first library call can take longer than the default, raise `SIMPLEOTA_CONFIRM_TIMEOUT_S` with a `-D` flag. At the usual internal slow clock the watchdog can wait at most about 8 hours (about 13 hours on the S2); a longer confirm time prints a warning and the watchdog fires at its limit. On core 3.x it stops before deep sleep, so the wake reports `deep_sleep`; on core 2.x a sleep longer than the rest of the confirm time ends in a watchdog reset instead. Either way the trial rolls back, so confirm before sleeping. Build with `-DSIMPLEOTA_DISABLE_TRIAL_WATCHDOG` to leave it out. Both opt-out flags must reach the C compiler too: put them in a `build_opt.h` next to the sketch, or set both `compiler.c.extra_flags` and `compiler.cpp.extra_flags`.
+
 ### Polling mode
 
 You must call `confirmRunning()` explicitly. The natural place is at the top of `loop()`, *after* your application has proven it can do real work:
@@ -611,6 +613,9 @@ Override any of the following with a `-D` compiler flag or a `#define` placed **
 | `SIMPLEOTA_TIMEOUT_MS` | `15000` | Milliseconds before an HTTP request or a stalled download is abandoned. |
 | `SIMPLEOTA_CHECK_INTERVAL_S` | `3600` | Default check interval (in seconds) used by `begin()`. Also exposed as a constant for manual scheduling in polling mode. |
 | `SIMPLEOTA_CONFIRM_TIMEOUT_S` | `300` | Default trial-install confirm timeout (in seconds). See [Rollback](#rollback). Overridable per-instance via `setConfirmTimeout()`. |
+| `SIMPLEOTA_TRIAL_WDT_MARGIN_S` | `60` | Smallest margin, in seconds, the chip watchdog adds to the confirm time; 10 percent of the confirm time is used when larger. Set it with a `-D` flag that reaches both compilers. |
+| `SIMPLEOTA_DISABLE_TRIAL_WATCHDOG` | unset | `-D` flag: leave the chip watchdog out. Crashes and resets still roll back. |
+| `SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` | unset | `-D` flag: do not define `verifyRollbackLater()`; the confirm timer is the only rollback and the watchdog is left out. |
 | `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` | `10` | How often (in seconds) the managed task retries `/check/` while in a trial install. |
 | `SIMPLEOTA_DEBUG` | `0` | Compile-time default for verbose `[SimpleOTAClient]` logging on `Serial`. Prefer the runtime `SimpleOTAClient::setDebug(true)` toggle from your sketch; see [Logging](#logging). |
 
@@ -653,7 +658,7 @@ If `Update.begin()` fails at runtime, this is the most likely cause. Verify your
 
 | Limitation | Detail |
 | --- | --- |
-| Hangs during a trial | A crash or reset during a trial returns to the previous firmware through the bootloader, and the confirm timer covers a trial that runs but never confirms. A hang that also stops the FreeRTOS timer is not caught. |
+| Hangs before `verifyRollbackLater()` | A hang in a global constructor happens before the chip watchdog starts, so nothing resets it. A crash there still rolls back. |
 | No automatic `reboot` event when `setAutoReboot(false)` | The library only emits `reboot` on the auto-reboot path it controls. Applications that drive their own restart should call `rebootForUpdate()` (which emits the event then calls `esp_restart()`) instead of `ESP.restart()` directly; see AdvancedOTA. |
 | `report()` requires a deployment context | The method needs a `deployment_id`, which only exists after a successful `check()`. The deployment context is retained through `apply()` so post-apply events (e.g. `"reboot"`) work, but `report()` returns `false` before any `check()` has succeeded. |
 | Application owns connectivity | The library is transport-agnostic and does not manage Wi-Fi, Ethernet, PPP, or reconnects. Establish a working IP connection before calling any library method, or supply an `isConnected` probe to `begin()`. |

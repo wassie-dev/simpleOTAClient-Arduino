@@ -29,6 +29,30 @@
 #include "SimpleOTATime.h"
 #include "SimpleOTATrial.h"
 
+#include "sdkconfig.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+
+// Bootloader rollback: the core can leave a new image pending verify, so a
+// crash or reset before confirmRunning() returns to the previous image.
+// -DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK keeps only the software timer.
+#if (defined(CONFIG_APP_ROLLBACK_ENABLE) || defined(CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE)) \
+    && !defined(SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK)
+#define SOTA_BOOTLOADER_ROLLBACK 1
+#else
+#define SOTA_BOOTLOADER_ROLLBACK 0
+#endif
+
+static_assert((int)SOTA_RST_POWERON  == (int)ESP_RST_POWERON  &&
+              (int)SOTA_RST_SW       == (int)ESP_RST_SW       &&
+              (int)SOTA_RST_PANIC    == (int)ESP_RST_PANIC    &&
+              (int)SOTA_RST_INT_WDT  == (int)ESP_RST_INT_WDT  &&
+              (int)SOTA_RST_TASK_WDT == (int)ESP_RST_TASK_WDT &&
+              (int)SOTA_RST_WDT      == (int)ESP_RST_WDT      &&
+              (int)SOTA_RST_DEEPSLEEP == (int)ESP_RST_DEEPSLEEP &&
+              (int)SOTA_RST_BROWNOUT == (int)ESP_RST_BROWNOUT,
+              "SimpleOTATrial.h reset codes match esp_reset_reason_t");
+
 // ---------------------------------------------------------------------------
 // Logging
 // ---------------------------------------------------------------------------
@@ -69,6 +93,7 @@ static const char* kNvsKeyFailBuild   = "sota_fail_build";  // uint32
 static const char* kNvsKeyConfirmPend = "sota_conf_pend";   // uint8: 1 if a "confirmed" report is pending
 static const char* kNvsKeyStaged      = "sota_staged";      // uint8: record written, slot not switched yet
 static const char* kNvsKeyOutbox      = "sota_outbox";      // blob: SotaOutbox
+static const char* kNvsKeyRbReason    = "sota_rb_reason";   // string: why sota_trial is 2; missing means confirm_timeout
 
 // Longest version label stored. Labels are short ("1.4.2"); a longer one
 // from the server is not stored rather than spending NVS on it.
@@ -345,6 +370,8 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _confirmTimeoutSec(SIMPLEOTA_CONFIRM_TIMEOUT_S),
       _bootValidated(false),
       _inTrial(false),
+      _trialEnding(false),
+      _timeoutMissed(false),
       _confirmTimer(nullptr),
       _lastCheckOk(false),
       _insecureWarned(false),
@@ -355,6 +382,7 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _isConnected(nullptr),
       _taskHandle(nullptr) {
     _outboxLock = xSemaphoreCreateMutexStatic(&_outboxLockBuf);
+    portMUX_INITIALIZE(&_trialMux);
     if (deviceId) {
         _deviceId = deviceId;
     } else {
@@ -516,13 +544,15 @@ bool SimpleOTAClient::_trialLoop() {
         if (_managedAutoConfirm && _lastCheckOk) {
             SOTA_LOG("trial: server reachable; auto-confirming (%s)",
                      ok ? "offer available" : "no update");
-            confirmRunning();
-            sendPendingReports();  // the confirmed report, without waiting a check
-            if (ok) {
-                OTAResult r = apply();
-                if (_onResult) _onResult(r);
+            if (confirmRunning()) {
+                sendPendingReports();  // the confirmed report, without waiting a check
+                if (ok) {
+                    OTAResult r = apply();
+                    if (_onResult) _onResult(r);
+                }
+                return true;
             }
-            return true;
+            SOTA_LOG("trial: could not confirm; trying again");
         }
 
         // Bounded sleep before the next attempt.
@@ -875,6 +905,12 @@ OTAResult SimpleOTAClient::apply() {
         SOTA_LOG("apply: an update is waiting for rebootForUpdate(); not flashing");
         return OTA_REBOOT_PENDING;
     }
+    // The other slot holds the previous image, which the trial may still
+    // need to switch back to.
+    if (_inTrial) {
+        SOTA_LOG("apply: running image not confirmed yet; not flashing");
+        return OTA_UNCONFIRMED;
+    }
     if (!_hasOffer) {
         SOTA_LOG("apply: no offer");
         return OTA_NO_OFFER;
@@ -1153,6 +1189,58 @@ OTAResult SimpleOTAClient::apply() {
 // Trial record (SimpleOTATrial.h) and report outbox (SimpleOTAOutbox.h)
 // ---------------------------------------------------------------------------
 
+// The trial record and partitions this boot sees. NVS must be initialised.
+static void sotaReadBootFacts(SotaBootFacts* facts) {
+    *facts = SotaBootFacts();
+    nvs_handle_t h;
+    if (nvs_open(kNvsNamespace, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8 (h, kNvsKeyTrial,    &facts->trial);
+        nvs_get_u8 (h, kNvsKeyStaged,   &facts->staged);
+        nvs_get_u32(h, kNvsKeyPrevPart, &facts->prevPart);
+        nvs_close(h);
+    }
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    const esp_partition_t* boot    = esp_ota_get_boot_partition();
+    facts->runningPart   = running ? running->address : 0;
+    facts->bootPart      = boot ? boot->address : 0;
+    facts->deepSleepWake = esp_reset_reason() == ESP_RST_DEEPSLEEP;
+}
+
+// Tell the bootloader the running image is good. False when it could not.
+static bool sotaMarkRunningValid() {
+#if SOTA_BOOTLOADER_ROLLBACK
+    const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err != ESP_OK) {
+        SOTA_LOG("mark valid failed: 0x%x", (unsigned)err);
+        return false;
+    }
+#endif
+    return true;
+}
+
+#if SOTA_BOOTLOADER_ROLLBACK
+// True while the bootloader still has the running image on probation.
+static bool sotaRunningImagePending() {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    return running && esp_ota_get_state_partition(running, &state) == ESP_OK &&
+           state == ESP_OTA_IMG_PENDING_VERIFY;
+}
+
+// initArduino() accepts a pending image before setup() unless this returns
+// true. Only a SimpleOTA trial is held; any other image, such as one written
+// by ArduinoOTA, is accepted as usual. This runs before the core's own
+// nvs_flash_init(): initialise here, never erase. Serial is not up yet, so
+// nothing is logged. Kept in this file so a PlatformIO archive links it in
+// with the class and it replaces the core's weak definition.
+extern "C" bool verifyRollbackLater() {
+    if (nvs_flash_init() != ESP_OK) return false;
+    SotaBootFacts facts;
+    sotaReadBootFacts(&facts);
+    return sotaHoldPendingImage(sotaRunningImagePending(), sotaClassifyBoot(&facts));
+}
+#endif
+
 // Write the trial record, with the new image's identity as the live one,
 // before Update.end() switches the boot slot, so a bootable new image always
 // has one. sota_staged marks a record whose slot switch has not happened
@@ -1221,6 +1309,7 @@ void SimpleOTAClient::dropTrialRecord() {
     p.remove(kNvsKeyFailDep);
     p.remove(kNvsKeyFailBuild);
     p.remove(kNvsKeyConfirmPend);
+    p.remove(kNvsKeyRbReason);
     p.end();
 }
 
@@ -1266,20 +1355,14 @@ void SimpleOTAClient::processBootValidation() {
         SOTA_LOG("bootval: no saved OTA state yet");
         return;
     }
-    SotaBootFacts facts = {};
-    facts.trial    = p.getUChar(kNvsKeyTrial, 0);
-    facts.staged   = p.getUChar(kNvsKeyStaged, 0);
-    facts.prevPart = p.getUInt (kNvsKeyPrevPart, 0);
     const bool     confirmPend = p.getUChar (kNvsKeyConfirmPend, 0) != 0;
     const String   dep         = p.getString(kNvsKeyFailDep, "");
     const uint32_t build       = p.getUInt  (kNvsKeyFailBuild, 0);
+    const String   rbReason    = p.getString(kNvsKeyRbReason, "");
     p.end();
 
-    const esp_partition_t* running = esp_ota_get_running_partition();
-    const esp_partition_t* boot    = esp_ota_get_boot_partition();
-    facts.runningPart   = running ? running->address : 0;
-    facts.bootPart      = boot ? boot->address : 0;
-    facts.deepSleepWake = esp_reset_reason() == ESP_RST_DEEPSLEEP;
+    SotaBootFacts facts;
+    sotaReadBootFacts(&facts);
 
     switch (sotaClassifyBoot(&facts)) {
     case SOTA_BOOT_NONE:
@@ -1291,13 +1374,16 @@ void SimpleOTAClient::processBootValidation() {
         return;
     case SOTA_BOOT_REPORT_PENDING:
         SOTA_LOG("bootval: a previous boot rolled back; queuing the report");
-        queueReport("rolled_back", "confirm_timeout", dep.c_str(), build);
+        queueReport("rolled_back", rbReason.length() ? rbReason.c_str() : "confirm_timeout",
+                    dep.c_str(), build);
         dropTrialRecord();
         return;
     case SOTA_BOOT_ROLLED_BACK:
+        // The bootloader switched back: the reset that ended the trial says why.
         SOTA_LOG("bootval: back on the previous image; queuing the report");
         restorePreviousIdentity();
-        queueReport("rolled_back", "confirm_timeout", dep.c_str(), build);
+        queueReport("rolled_back", sotaRollbackReason(esp_reset_reason()),
+                    dep.c_str(), build);
         dropTrialRecord();
         return;
     case SOTA_BOOT_WAITING:
@@ -1314,6 +1400,14 @@ void SimpleOTAClient::processBootValidation() {
         SOTA_LOG("bootval: dropping a trial record that cannot be checked");
         dropTrialRecord();
         return;
+    case SOTA_BOOT_SLEPT_IN_TRIAL:
+        if (_rollbackEnabled) {
+            SOTA_LOG("bootval: woke from deep sleep before confirming; rolling back");
+            performRollback("deep_sleep");
+            return;
+        }
+        startTrial(facts.staged != 0, dep.c_str(), build);  // accepts it
+        return;
     case SOTA_BOOT_TRIAL:
         startTrial(facts.staged != 0, dep.c_str(), build);
         return;
@@ -1328,6 +1422,7 @@ void SimpleOTAClient::startTrial(bool staged, const char* deploymentId, uint32_t
 
     if (!_rollbackEnabled) {
         SOTA_LOG("bootval: rollback disabled; accepting the new image");
+        sotaMarkRunningValid();
         queueReport("confirmed", nullptr, deploymentId, build);
         dropTrialRecord();
         return;
@@ -1341,17 +1436,33 @@ void SimpleOTAClient::startTrial(bool staged, const char* deploymentId, uint32_t
                                  &SimpleOTAClient::_confirmTimerCb);
     if (_confirmTimer == nullptr) {
         SOTA_LOG("bootval: timer alloc failed; rolling back immediately");
-        performRollback();
+        performRollback("confirm_timeout");
         return;
     }
     if (xTimerStart(_confirmTimer, 0) != pdPASS) {
         SOTA_LOG("bootval: timer start failed; rolling back immediately");
         xTimerDelete(_confirmTimer, 0);
         _confirmTimer = nullptr;
-        performRollback();
+        performRollback("confirm_timeout");
         return;
     }
     SOTA_LOG("bootval: TRIAL armed (timeout=%us)", (unsigned)_confirmTimeoutSec);
+}
+
+// confirmRunning() and the confirm timer can run at the same time on
+// different tasks. Only the first to get here ends the trial. When the timer
+// loses to a confirm that is still in progress, it leaves _timeoutMissed for
+// confirmRunning() to act on if the confirm fails.
+bool SimpleOTAClient::claimTrialEnd(bool fromTimer) {
+    portENTER_CRITICAL(&_trialMux);
+    const bool claimed = _inTrial && !_trialEnding;
+    if (claimed) {
+        _trialEnding = true;
+    } else if (fromTimer && _inTrial) {
+        _timeoutMissed = true;
+    }
+    portEXIT_CRITICAL(&_trialMux);
+    return claimed;
 }
 
 // FreeRTOS one-shot timer callback. Runs in the timer service task context.
@@ -1359,14 +1470,9 @@ void SimpleOTAClient::startTrial(bool staged, const char* deploymentId, uint32_t
 void SimpleOTAClient::_confirmTimerCb(TimerHandle_t xTimer) {
     SimpleOTAClient* self =
         static_cast<SimpleOTAClient*>(pvTimerGetTimerID(xTimer));
-    // Guard against the race where confirmRunning() ran concurrently with
-    // this callback being queued. xTimerStop() can return pdPASS while the
-    // callback is already in the timer service queue; reading _inTrial here
-    // (which confirmRunning() sets false) eliminates the spurious-rollback
-    // window without needing a mutex (bool write/read is atomic on Cortex-M).
-    if (!self || !self->_inTrial) return;
+    if (!self || !self->claimTrialEnd(/*fromTimer=*/true)) return;
     SOTA_LOG("confirm timer fired; rolling back");
-    self->performRollback();
+    self->performRollback("confirm_timeout");
 }
 
 // The app partition at a flash address, or nullptr.
@@ -1387,11 +1493,12 @@ static const esp_partition_t* sotaFindAppPartition(uint32_t address) {
 }
 
 // Switch back to the previous image, put its identity back, and set
-// sota_trial to 2 so the next boot reports the rollback, then restart. A
+// sota_trial to 2 with the reason so the next boot reports the rollback,
+// then restart. A
 // step that fails is logged and the restart still happens: a broken image
 // left running as an endless trial would be worse than a partial restore.
 // No delay(): this can run in the timer service task, which must not block.
-void SimpleOTAClient::performRollback() {
+void SimpleOTAClient::performRollback(const char* reason) {
     Preferences p;
     uint32_t prevPart = 0;
     if (p.begin(kNvsNamespace, /*readOnly=*/true)) {
@@ -1409,6 +1516,7 @@ void SimpleOTAClient::performRollback() {
 
     restorePreviousIdentity();
     if (p.begin(kNvsNamespace, /*readOnly=*/false)) {
+        p.putString(kNvsKeyRbReason, reason);
         p.putUChar(kNvsKeyTrial, 2);  // fail_dep / fail_build stay for the report
         p.end();
     }
@@ -1421,12 +1529,27 @@ bool SimpleOTAClient::confirmRunning() {
     // has been called yet. This makes confirmRunning() safe to call from
     // setup() in polling mode, before the first check() invocation.
     processBootValidation();
-    if (!_inTrial) return false;
-    // Set _inTrial false BEFORE stopping the timer. The FreeRTOS timer
-    // callback (_confirmTimerCb) guards on _inTrial; setting it false first
-    // maximises the window in which a concurrently-queued callback sees the
-    // cancellation and aborts instead of calling performRollback().
+    if (!claimTrialEnd(/*fromTimer=*/false)) return false;
+    // Tell the bootloader first. If it cannot record the image as good, the
+    // trial goes on, timer included, and the caller can try again. A timeout
+    // that fired meanwhile still rolls back.
+    if (!sotaMarkRunningValid()) {
+        portENTER_CRITICAL(&_trialMux);
+        _trialEnding = false;
+        const bool missed = _timeoutMissed;
+        _timeoutMissed = false;
+        portEXIT_CRITICAL(&_trialMux);
+        if (missed) {
+            SOTA_LOG("confirmRunning: could not confirm, and the trial timed out; rolling back");
+            performRollback("confirm_timeout");
+        }
+        return false;
+    }
+    portENTER_CRITICAL(&_trialMux);
     _inTrial = false;
+    _trialEnding = false;
+    _timeoutMissed = false;
+    portEXIT_CRITICAL(&_trialMux);
     if (_confirmTimer) {
         xTimerStop(_confirmTimer, 0);
         xTimerDelete(_confirmTimer, 0);

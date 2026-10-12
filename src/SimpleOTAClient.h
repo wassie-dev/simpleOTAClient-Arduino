@@ -81,7 +81,8 @@ enum OTAResult {
     OTA_FLASH_FAIL     = 2,  ///< Network or partition write failure.
     OTA_NO_OFFER       = 3,  ///< apply() called without a successful preceding check().
     OTA_SIGNATURE_FAIL = 4,  ///< Ed25519 signature verification failed; image rejected before it was marked bootable.
-    OTA_REBOOT_PENDING = 5   ///< An update is flashed and waits for rebootForUpdate() (setAutoReboot(false)). Nothing was downloaded.
+    OTA_REBOOT_PENDING = 5,  ///< An update is flashed and waits for rebootForUpdate() (setAutoReboot(false)). Nothing was downloaded.
+    OTA_UNCONFIRMED    = 6   ///< The running image is on trial. Call confirmRunning(), then apply() again. The offer is kept.
 };
 
 /**
@@ -385,12 +386,13 @@ public:
     /**
      * @brief Confirm that the currently-running firmware is healthy.
      *
-     * Cancels the rollback timer and clears trial state from NVS so subsequent
-     * boots are normal. Safe to call unconditionally from setup(), even before
-     * check() or begin().
+     * Tells the bootloader the image is good, cancels the rollback timer, and
+     * clears the trial record so later boots are normal. Safe to call
+     * unconditionally from setup(), even before check() or begin().
      *
-     * @return true if a trial was active and is now confirmed; false if the device
-     *         was not in a trial (the call is a no-op in that case).
+     * @return true if a trial was active and is now confirmed; false if the
+     *         device was not in a trial (a no-op), or if the bootloader could
+     *         not record the image as good (the trial carries on; call again).
      */
     bool confirmRunning();
 
@@ -533,12 +535,16 @@ private:
     uint32_t      _confirmTimeoutSec;
     bool          _bootValidated;      ///< processBootValidation() has run this boot.
     bool          _inTrial;            ///< This boot is an unconfirmed new image.
+    bool          _trialEnding;        ///< confirmRunning() or the confirm timer has claimed the end of the trial.
+    bool          _timeoutMissed;      ///< The confirm timer fired while confirmRunning() held the claim.
+    portMUX_TYPE  _trialMux;           ///< Guards _inTrial, _trialEnding and _timeoutMissed for claimTrialEnd().
     SotaOutbox    _outbox;             ///< confirmed / rolled_back reports waiting to be sent.
     StaticSemaphore_t _outboxLockBuf;
     SemaphoreHandle_t _outboxLock;     ///< Guards _outbox: the app task and the managed task both use it.
     TimerHandle_t _confirmTimer;
     bool          _lastCheckOk;        ///< Set true inside check() on a 200 from /check/.
     static void   _confirmTimerCb(TimerHandle_t t);
+    bool          claimTrialEnd(bool fromTimer);
 
     // Internal helpers (defined in .cpp).
     bool _insecureWarned;
@@ -567,7 +573,7 @@ private:
     void dropTrialRecord();            ///< Remove the trial record and its report context.
     void saveConfirmContext();         ///< Rollback disabled: context for the confirmed report.
     void restorePreviousIdentity();    ///< Back on the previous image: restore its build/hash/version.
-    void performRollback();            ///< Switch back to the previous image and reboot.
+    void performRollback(const char* reason);  ///< Switch back to the previous image and reboot; reason goes in the rolled_back report.
     void startTrial(bool staged, const char* deploymentId, uint32_t build); ///< First boot of the new image.
     void loadOutbox();
     void saveOutbox();

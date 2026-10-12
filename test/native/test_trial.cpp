@@ -74,6 +74,10 @@ int main(void) {
           "slot switched, sota_staged left behind, deep-sleep wake: waiting");
     CHECK(classify(1, false, A, A, 0, true) == SOTA_BOOT_ROLLED_BACK,
           "deep-sleep wake, boot partition unknown: rolled back");
+    CHECK(classify(1, false, A, B, B, true) == SOTA_BOOT_SLEPT_IN_TRIAL,
+          "deep-sleep wake on the new image before it was confirmed: roll back");
+    CHECK(classify(1, true, A, B, B, true) == SOTA_BOOT_SLEPT_IN_TRIAL,
+          "deep-sleep wake on the new image, sota_staged left behind: roll back");
 
     // The snapshot of the previous identity: a power cut at any write before
     // the slot switch must leave the live identity as it was.
@@ -103,6 +107,43 @@ int main(void) {
     CHECK(!sotaAbandonRestoresIdentity(0) && !sotaAbandonRestoresIdentity(SOTA_STAGED_STARTED) &&
               sotaAbandonRestoresIdentity(SOTA_STAGED_SNAPSHOT),
           "only a full snapshot is restored");
+
+    // Holding a pending image (verifyRollbackLater).
+    CHECK(sotaHoldPendingImage(true, SOTA_BOOT_TRIAL),
+          "a pending SimpleOTA trial is held");
+    CHECK(!sotaHoldPendingImage(true, SOTA_BOOT_NONE),
+          "a pending image with no trial record (ArduinoOTA) is not held");
+    CHECK(!sotaHoldPendingImage(false, SOTA_BOOT_TRIAL),
+          "a trial the bootloader is not supervising is not held");
+    CHECK(sotaHoldPendingImage(true, SOTA_BOOT_SLEPT_IN_TRIAL),
+          "a trial that woke from deep sleep is held until it rolls back");
+    CHECK(!sotaHoldPendingImage(true, SOTA_BOOT_ROLLED_BACK) &&
+              !sotaHoldPendingImage(true, SOTA_BOOT_ABANDONED) &&
+              !sotaHoldPendingImage(true, SOTA_BOOT_WAITING) &&
+              !sotaHoldPendingImage(true, SOTA_BOOT_INCOMPLETE) &&
+              !sotaHoldPendingImage(true, SOTA_BOOT_REPORT_PENDING),
+          "only trial outcomes are held");
+
+    // Rollback reasons.
+    CHECK(strcmp(sotaRollbackReason(SOTA_RST_PANIC), "panic") == 0, "panic");
+    CHECK(strcmp(sotaRollbackReason(SOTA_RST_WDT), "watchdog") == 0, "chip watchdog");
+    CHECK(strcmp(sotaRollbackReason(SOTA_RST_TASK_WDT), "task_wdt") == 0, "task watchdog");
+    CHECK(strcmp(sotaRollbackReason(SOTA_RST_BROWNOUT), "brownout") == 0, "brownout");
+    CHECK(strcmp(sotaRollbackReason(SOTA_RST_POWERON), "power_on") == 0, "power on");
+    CHECK(strcmp(sotaRollbackReason(SOTA_RST_SW), "reset") == 0, "software reset");
+    CHECK(strcmp(sotaRollbackReason(0), "reset") == 0, "unknown reset");
+    CHECK(strcmp(sotaRollbackReason(SOTA_RST_INT_WDT), "int_wdt") == 0, "interrupt watchdog");
+    CHECK(strcmp(sotaRollbackReason(SOTA_RST_DEEPSLEEP), "deep_sleep") == 0, "deep sleep");
+    bool allFit = true;
+    for (int rr = -1; rr <= 32; ++rr) {
+        SotaOutbox b;
+        sotaOutboxInit(&b);
+        allFit = allFit && sotaOutboxPush(&b, "rolled_back", sotaRollbackReason(rr), "d", 1);
+    }
+    SotaOutbox timeoutBox;
+    sotaOutboxInit(&timeoutBox);
+    CHECK(allFit && sotaOutboxPush(&timeoutBox, "rolled_back", "confirm_timeout", "d", 1),
+          "every rollback reason fits the reason field");
 
     // Outbox.
     SotaOutbox box;

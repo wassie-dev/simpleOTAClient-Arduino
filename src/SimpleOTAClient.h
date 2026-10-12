@@ -13,6 +13,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/timers.h>
+#include <freertos/semphr.h>
+
+#include "SimpleOTAOutbox.h"
 
 // ---------------------------------------------------------------------------
 // Compile-time configuration. Override with -D or a #define before #include.
@@ -530,12 +533,11 @@ private:
     uint32_t      _confirmTimeoutSec;
     bool          _bootValidated;      ///< processBootValidation() has run this boot.
     bool          _inTrial;            ///< This boot is an unconfirmed new image.
-    bool          _rolledBackPending;  ///< trial=2 on boot; rolled_back report deferred.
-    bool          _confirmedPending;   ///< Deferred "confirmed" report queued for next /check/.
-    String        _confirmedDep;       ///< deployment_id for the deferred "confirmed" POST.
-    uint32_t      _confirmedBuild;     ///< build_number for the deferred "confirmed" POST.
+    SotaOutbox    _outbox;             ///< confirmed / rolled_back reports waiting to be sent.
+    StaticSemaphore_t _outboxLockBuf;
+    SemaphoreHandle_t _outboxLock;     ///< Guards _outbox: the app task and the managed task both use it.
     TimerHandle_t _confirmTimer;
-    bool          _lastCheckOk;        ///< Set true inside check() on any 2xx from /check/.
+    bool          _lastCheckOk;        ///< Set true inside check() on a 200 from /check/.
     static void   _confirmTimerCb(TimerHandle_t t);
 
     // Internal helpers (defined in .cpp).
@@ -543,6 +545,8 @@ private:
     bool _authWarned;   ///< One-shot warning emitted on the first 401/403 from the server.
     int  postJson(const char* path, const String& body, String* outResp);
     bool sendStatus(const char* event, const char* reason);
+    int  postStatus(const char* event, const char* reason,
+                    const char* deploymentId, uint32_t buildNumber, String* outResp);
     bool sendStatusFor(const char* event, const char* reason,
                        const char* deploymentId, uint32_t buildNumber);
     uint32_t readBuildNumber();
@@ -557,11 +561,19 @@ private:
 
     // Rollback internals.
     void processBootValidation();
-    void snapshotPreOtaState();        ///< Called from apply() before esp_restart().
-    void performRollback();            ///< Timer callback target and explicit caller.
-    void clearTrialState();            ///< Wipe trial snapshot keys only (sota_trial, sota_prev_*). Does NOT touch sota_fail_* or sota_conf_pend.
-    void reportRolledBackIfPending();  ///< Attempt the deferred rolled_back POST.
-    void reportConfirmedIfPending();   ///< Attempt the deferred confirmed POST.
+    bool stageTrialRecord(const char* newHash);  ///< Save the trial record before the slot switch.
+    void abandonTrialRecord(bool restoreIdentity); ///< Drop a staged record whose switch will not happen.
+    void unstageTrialRecord();         ///< The slot switch happened.
+    void dropTrialRecord();            ///< Remove the trial record and its report context.
+    void saveConfirmContext();         ///< Rollback disabled: context for the confirmed report.
+    void restorePreviousIdentity();    ///< Back on the previous image: restore its build/hash/version.
+    void performRollback();            ///< Switch back to the previous image and reboot.
+    void startTrial(bool staged, const char* deploymentId, uint32_t build); ///< First boot of the new image.
+    void loadOutbox();
+    void saveOutbox();
+    void queueReport(const char* event, const char* reason,
+                     const char* deploymentId, uint32_t build);
+    void sendPendingReports();         ///< Send queued reports; keep any that got no response.
 
     // Managed-mode state.
     uint32_t     _checkIntervalSec;
@@ -571,7 +583,7 @@ private:
     TaskHandle_t _taskHandle;
     static void  _taskEntry(void* arg);
     void         _taskLoop();
-    void         _trialLoop();  ///< Managed-mode loop while _inTrial.
+    bool         _trialLoop();  ///< Managed-mode loop while _inTrial. True when it confirmed on its own check.
 };
 
 #endif  // SIMPLEOTACLIENT_H

@@ -27,6 +27,7 @@
 
 #include "SimpleOTASigning.h"
 #include "SimpleOTATime.h"
+#include "SimpleOTATrial.h"
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -66,6 +67,12 @@ static const char* kNvsKeyPrevVer     = "sota_prev_ver";    // string
 static const char* kNvsKeyFailDep     = "sota_fail_dep";    // string
 static const char* kNvsKeyFailBuild   = "sota_fail_build";  // uint32
 static const char* kNvsKeyConfirmPend = "sota_conf_pend";   // uint8: 1 if a "confirmed" report is pending
+static const char* kNvsKeyStaged      = "sota_staged";      // uint8: record written, slot not switched yet
+static const char* kNvsKeyOutbox      = "sota_outbox";      // blob: SotaOutbox
+
+// Longest version label stored. Labels are short ("1.4.2"); a longer one
+// from the server is not stored rather than spending NVS on it.
+static const size_t kMaxVersionLabelLen = 64;
 
 // A flashed update waits for its reboot: the boot slot already points at it.
 // The next update slot holds it, so nothing may be downloaded until the
@@ -121,10 +128,7 @@ String SimpleOTAClient::readVersionFromNvs() {
 
 void SimpleOTAClient::writeVersionToNvs(const char* version) {
     if (!version || !*version) return;
-    // Sanity cap: server-supplied version strings are expected to be short
-    // (e.g. "1.4.2"). Reject anything implausibly long rather than spending
-    // flash wear cycles on a malformed server response.
-    if (strlen(version) > 64) {
+    if (strlen(version) > kMaxVersionLabelLen) {
         SOTA_LOG("writeVersionToNvs: version string too long (%u), skipping",
                  (unsigned)strlen(version));
         return;
@@ -341,9 +345,6 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _confirmTimeoutSec(SIMPLEOTA_CONFIRM_TIMEOUT_S),
       _bootValidated(false),
       _inTrial(false),
-      _rolledBackPending(false),
-      _confirmedPending(false),
-      _confirmedBuild(0),
       _confirmTimer(nullptr),
       _lastCheckOk(false),
       _insecureWarned(false),
@@ -353,6 +354,7 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _onResult(nullptr),
       _isConnected(nullptr),
       _taskHandle(nullptr) {
+    _outboxLock = xSemaphoreCreateMutexStatic(&_outboxLockBuf);
     if (deviceId) {
         _deviceId = deviceId;
     } else {
@@ -463,8 +465,10 @@ void SimpleOTAClient::_taskLoop() {
     // through to the normal cadence loop. The independent FreeRTOS timer is
     // responsible for actually rebooting on confirm-timeout; _trialLoop()
     // exits when either confirmRunning() was called or the deadline passed.
-    if (_inTrial) {
-        _trialLoop();
+    // When it confirmed on its own check, that check is this cycle's: the
+    // next one waits the interval.
+    if (_inTrial && _trialLoop()) {
+        vTaskDelay(sotaSecondsToTicks(_checkIntervalSec, configTICK_RATE_HZ));
     }
 
     for (;;) {
@@ -491,7 +495,7 @@ void SimpleOTAClient::_taskLoop() {
 // Exits when the trial is confirmed (by us or by the app) or the deadline
 // passes. The FreeRTOS confirm timer will fire performRollback() at the
 // deadline regardless of where this loop is currently parked.
-void SimpleOTAClient::_trialLoop() {
+bool SimpleOTAClient::_trialLoop() {
     const uint32_t deadlineMs = millis() + _confirmTimeoutSec * 1000UL;
 
     while (_inTrial && (int32_t)(deadlineMs - millis()) > 0) {
@@ -505,7 +509,7 @@ void SimpleOTAClient::_trialLoop() {
         if ((int32_t)(deadlineMs - millis()) <= 0) break;
 
         bool ok = check();
-        // _lastCheckOk is set true by check() on any 2xx from /check/,
+        // _lastCheckOk is set true by check() on a 200 from /check/,
         // regardless of update_available. This proves boot + connectivity +
         // TLS + token auth + server reachability: the correct trigger for
         // managed auto-confirm.
@@ -513,11 +517,12 @@ void SimpleOTAClient::_trialLoop() {
             SOTA_LOG("trial: server reachable; auto-confirming (%s)",
                      ok ? "offer available" : "no update");
             confirmRunning();
+            sendPendingReports();  // the confirmed report, without waiting a check
             if (ok) {
                 OTAResult r = apply();
                 if (_onResult) _onResult(r);
             }
-            return;
+            return true;
         }
 
         // Bounded sleep before the next attempt.
@@ -533,6 +538,7 @@ void SimpleOTAClient::_trialLoop() {
     // deadline passed. In the latter case the FreeRTOS timer has fired or is
     // about to fire performRollback() -> esp_restart(). Returning here lets
     // the outer task loop continue normally if (somehow) we didn't roll back.
+    return false;
 }
 
 // Emit a single Serial warning when running with setInsecure(). This is
@@ -634,14 +640,14 @@ int SimpleOTAClient::postJson(const char* path, const String& body, String* outR
 // ---------------------------------------------------------------------------
 
 bool SimpleOTAClient::check() {
-    // Boot validation runs once per process lifetime. Wired into check() so
+    // Boot validation runs once per instance. Wired into check() so
     // polling-mode users get rollback support without an extra setup() call.
     // begin() also calls this directly so managed mode is symmetric.
     processBootValidation();
 
-    // If a prior boot rolled back, try to inform the server. Best-effort:
-    // failure here leaves NVS state intact so we'll retry on the next check().
-    reportRolledBackIfPending();
+    // Queued confirmed / rolled_back reports. One that gets no response
+    // stays queued for the next check(); none of them holds up an update.
+    sendPendingReports();
 
     clearOffer();
 
@@ -704,12 +710,7 @@ bool SimpleOTAClient::check() {
         SOTA_LOG("check: non-200 (%d), no offer", code);
         return false;
     }
-    _lastCheckOk = true;  // any 2xx proves server reachability
-
-    // Now that the server is confirmed reachable, attempt the deferred
-    // "confirmed" report for a successful OTA boot. Best-effort: failure
-    // leaves NVS state intact so we'll retry on the next check().
-    reportConfirmedIfPending();
+    _lastCheckOk = true;  // the server answered: it is reachable
 
     bool available = false;
     if (!jsonGetBool(resp, "update_available", available) || !available) {
@@ -771,8 +772,11 @@ bool SimpleOTAClient::check() {
 // /api/v1/ota/status/
 // ---------------------------------------------------------------------------
 
-bool SimpleOTAClient::sendStatusFor(const char* event, const char* reason,
-                                    const char* deploymentId, uint32_t buildNumber) {
+// Post one status event. Returns the HTTP status, or -1 when no response
+// came back. The response body is stored in *outResp when given.
+int SimpleOTAClient::postStatus(const char* event, const char* reason,
+                                const char* deploymentId, uint32_t buildNumber,
+                                String* outResp) {
     // Log the event name + deployment context BEFORE the network call so
     // it's visible even if the POST hangs, and so callers can distinguish
     // back-to-back status posts in the trace (e.g. validated vs. reboot).
@@ -793,8 +797,13 @@ bool SimpleOTAClient::sendStatusFor(const char* event, const char* reason,
     }
     body += '}';
 
+    return postJson("/api/v1/ota/status/", body, outResp);
+}
+
+bool SimpleOTAClient::sendStatusFor(const char* event, const char* reason,
+                                    const char* deploymentId, uint32_t buildNumber) {
     String resp;
-    int code = postJson("/api/v1/ota/status/", body, &resp);
+    const int code = postStatus(event, reason, deploymentId, buildNumber, &resp);
     if (code < 200 || code >= 300) {
         SOTA_LOG("status: event=%s rejected (http=%d)", event, code);
         return false;
@@ -855,6 +864,10 @@ void SimpleOTAClient::rebootForUpdate() {
 // ---------------------------------------------------------------------------
 
 OTAResult SimpleOTAClient::apply() {
+    // Boot validation moves any report left in the trial keys to the outbox
+    // before a new trial record is written there.
+    processBootValidation();
+
     // The next update slot is the one after the running image. While a
     // flashed image waits for its reboot, that slot holds it, and another
     // download would erase it.
@@ -1081,55 +1094,34 @@ OTAResult SimpleOTAClient::apply() {
         return OTA_SIGNATURE_FAIL;
     }
 
+    // The trial record goes in before Update.end() switches the boot slot,
+    // so a power cut can never leave a bootable new image without one.
+    if (_rollbackEnabled && !stageTrialRecord(hex)) {
+        Update.abort();
+        sendStatus("failed", "state_save_failed");
+        clearOffer();
+        return OTA_FLASH_FAIL;
+    }
+
     if (!Update.end(true)) {
         SOTA_LOG("apply: Update.end failed err=%d", (int)Update.getError());
+        if (_rollbackEnabled) abandonTrialRecord(true);
         sendStatus("failed", "update_end_failed");
         clearOffer();
         return OTA_FLASH_FAIL;
     }
     s_updateWaiting = true;
 
-    sendStatus("flashed", nullptr);
-
-    // Snapshot the OUTGOING image's identity before we overwrite NVS, so a
-    // post-apply rollback can restore it. Reads from NVS read what was just
-    // written by the PREVIOUS apply() (or the factory defaults). Must happen
-    // before the writeBuildNumber/writeHashToNvs/writeVersionToNvs calls.
-    // Gated on _rollbackEnabled so users who opted out pay no NVS cost.
     if (_rollbackEnabled) {
-        snapshotPreOtaState();
+        unstageTrialRecord();
+    } else {
+        writeBuildNumber(_buildNumber);
+        writeHashToNvs(hex);
+        writeVersionToNvs(_offeredVersion.c_str());
+        saveConfirmContext();
     }
-
-    writeBuildNumber(_buildNumber);
-    writeHashToNvs(hex);
-    writeVersionToNvs(_offeredVersion.c_str());
+    sendStatus("flashed", nullptr);
     sendStatus("validated", nullptr);
-
-    // Persist deployment context + confirm-pending flag UNCONDITIONALLY so
-    // the next boot can emit a "confirmed" report regardless of rollback
-    // mode. When rollback is enabled, also arm the trial flag in the same
-    // NVS commit so a power loss between writes cannot leave the device
-    // half-armed. processBootValidation() on the next boot reads these to
-    // decide what to do.
-    {
-        Preferences p;
-        if (p.begin(kNvsNamespace, /*readOnly=*/false)) {
-            p.putString(kNvsKeyFailDep,     _deploymentId.c_str());
-            p.putUInt  (kNvsKeyFailBuild,   _buildNumber);
-            p.putUChar (kNvsKeyConfirmPend, 1);
-            if (_rollbackEnabled) {
-                p.putUChar(kNvsKeyTrial, 1);
-                SOTA_LOG("apply: armed trial (timeout=%us deployment=%s)",
-                         (unsigned)_confirmTimeoutSec, _deploymentId.c_str());
-            } else {
-                SOTA_LOG("apply: confirm pending (rollback disabled, deployment=%s)",
-                         _deploymentId.c_str());
-            }
-            p.end();
-        } else {
-            SOTA_LOG("apply: NVS open failed; confirm/trial state not armed");
-        }
-    }
 
     // Clear the download-related fields so a second apply() call (with
     // auto-reboot disabled) doesn't redownload and reflash the same image.
@@ -1158,50 +1150,110 @@ OTAResult SimpleOTAClient::apply() {
 }
 
 // ---------------------------------------------------------------------------
-// Rollback / trial-install machinery (v0.2.0)
+// Trial record (SimpleOTATrial.h) and report outbox (SimpleOTAOutbox.h)
 // ---------------------------------------------------------------------------
 
-// Snapshot the CURRENT (about-to-be-replaced) image identity into NVS so a
-// failed trial can restore it. Called from apply() right before NVS is
-// overwritten with the new image's metadata. Reads esp_ota_get_running_-
-// partition() for the partition address (not the about-to-boot partition).
-void SimpleOTAClient::snapshotPreOtaState() {
+// Write the trial record, with the new image's identity as the live one,
+// before Update.end() switches the boot slot, so a bootable new image always
+// has one. sota_staged marks a record whose slot switch has not happened
+// yet; it goes first and sota_trial last, because each put reaches flash on
+// its own. Returns false, with the record removed and the previous identity
+// back in place, when it could not be saved.
+bool SimpleOTAClient::stageTrialRecord(const char* newHash) {
     const esp_partition_t* running = esp_ota_get_running_partition();
-    if (!running) {
-        SOTA_LOG("snapshot: no running partition; skipping");
-        return;
-    }
-    uint32_t prevBuild = readBuildNumber();
-    String   prevHash  = readHashFromNvs();
-    String   prevVer   = readVersionFromNvs();
+    if (!running) return false;
+    const uint32_t prevBuild = readBuildNumber();
+    const String   prevHash  = readHashFromNvs();
+    const String   prevVer   = readVersionFromNvs();
 
     Preferences p;
-    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) {
-        SOTA_LOG("snapshot: NVS open failed");
-        return;
-    }
-    p.putUInt  (kNvsKeyPrevPart,  running->address);
-    p.putUInt  (kNvsKeyPrevBuild, prevBuild);
-    p.putString(kNvsKeyPrevHash,  prevHash);
-    p.putString(kNvsKeyPrevVer,   prevVer);
+    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return false;
+    const String newVer =
+        _offeredVersion.length() <= kMaxVersionLabelLen ? _offeredVersion : String();
+    const bool snapshotOk = p.putUChar (kNvsKeyStaged,    SOTA_STAGED_STARTED) == 1
+                         && p.putUInt  (kNvsKeyPrevPart,  running->address) == 4
+                         && p.putUInt  (kNvsKeyPrevBuild, prevBuild) == 4
+                         && p.putString(kNvsKeyPrevHash,  prevHash) == prevHash.length()
+                         && p.putString(kNvsKeyPrevVer,   prevVer) == prevVer.length()
+                         && p.putUChar (kNvsKeyStaged,    SOTA_STAGED_SNAPSHOT) == 1;
+    bool ok = snapshotOk
+           && p.putUInt  (kNvsKeyBuild,       _buildNumber) == 4
+           && p.putString(kNvsKeyHash,        newHash) == strlen(newHash)
+           && p.putString(kNvsKeyVersion,     newVer) == newVer.length()
+           && p.putString(kNvsKeyFailDep,     _deploymentId) == _deploymentId.length()
+           && p.putUInt  (kNvsKeyFailBuild,   _buildNumber) == 4
+           && p.putUChar (kNvsKeyConfirmPend, 1) == 1
+           && p.putUChar (kNvsKeyTrial,       1) == 1;
     p.end();
-    SOTA_LOG("snapshot: prev_part=0x%x prev_build=%u",
-             (unsigned)running->address, (unsigned)prevBuild);
+    SOTA_LOG("apply: trial record %s (prev_part=0x%x deployment=%s)",
+             ok ? "saved" : "NOT saved", (unsigned)running->address,
+             _deploymentId.c_str());
+    if (!ok) abandonTrialRecord(snapshotOk);
+    return ok;
 }
 
-// One-shot boot-time check. Runs at most once per process lifetime (gated by
-// _bootValidated). Based on sota_trial value:
-//   0 / missing -> nothing to do (steady state)
-//   1           -> a trial is in flight; compare running partition to the
-//                  snapshot. If we're on the new image, arm the confirm
-//                  timer and set _inTrial. If we're somehow on the old
-//                  image (e.g., bootloader skipped) treat as already-rolled-
-//                  back and queue the report.
-//   2           -> a rollback was performed on a prior boot; queue the
-//                  rolled_back report for the next successful /check/.
+// A staged record whose slot switch will not happen. restoreIdentity is
+// false when the snapshot itself was not saved, so the live identity was
+// never touched.
+void SimpleOTAClient::abandonTrialRecord(bool restoreIdentity) {
+    if (restoreIdentity) restorePreviousIdentity();
+    dropTrialRecord();
+}
+
+// The boot slot now points at the new image.
+void SimpleOTAClient::unstageTrialRecord() {
+    Preferences p;
+    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return;
+    p.remove(kNvsKeyStaged);
+    p.end();
+}
+
+// Remove the trial record and the report context that came with it.
+void SimpleOTAClient::dropTrialRecord() {
+    Preferences p;
+    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return;
+    p.remove(kNvsKeyTrial);
+    p.remove(kNvsKeyStaged);
+    p.remove(kNvsKeyPrevPart);
+    p.remove(kNvsKeyPrevBuild);
+    p.remove(kNvsKeyPrevHash);
+    p.remove(kNvsKeyPrevVer);
+    p.remove(kNvsKeyFailDep);
+    p.remove(kNvsKeyFailBuild);
+    p.remove(kNvsKeyConfirmPend);
+    p.end();
+}
+
+// With rollback disabled there is no trial: only the context for the
+// "confirmed" report the next boot queues.
+void SimpleOTAClient::saveConfirmContext() {
+    Preferences p;
+    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return;
+    p.putString(kNvsKeyFailDep,     _deploymentId.c_str());
+    p.putUInt  (kNvsKeyFailBuild,   _buildNumber);
+    p.putUChar (kNvsKeyConfirmPend, 1);
+    p.end();
+}
+
+// Back on the previous image: report the identity it actually has.
+void SimpleOTAClient::restorePreviousIdentity() {
+    Preferences p;
+    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return;
+    const uint32_t build = p.getUInt  (kNvsKeyPrevBuild, 0);
+    const String   hash  = p.getString(kNvsKeyPrevHash,  "");
+    const String   ver   = p.getString(kNvsKeyPrevVer,   "");
+    // Zero and empty values are valid: the state before the first update.
+    p.putUInt  (kNvsKeyBuild,   build);
+    p.putString(kNvsKeyHash,    hash);
+    p.putString(kNvsKeyVersion, ver);
+    p.end();
+}
+
+// Once per instance. sotaClassifyBoot() decides; this carries it out.
 void SimpleOTAClient::processBootValidation() {
     if (_bootValidated) return;
     _bootValidated = true;
+    loadOutbox();
 
     if (s_updateWaiting) {
         SOTA_LOG("bootval: an update flashed this boot is waiting for its reboot");
@@ -1210,125 +1262,77 @@ void SimpleOTAClient::processBootValidation() {
 
     Preferences p;
     if (!p.begin(kNvsNamespace, /*readOnly=*/true)) {
-        // Read-only open fails when the namespace has never been written,
-        // i.e. a device that has not completed an OTA yet. Expected.
-        SOTA_LOG("bootval: no saved OTA state yet (fresh device)");
+        // The namespace does not exist before the first update.
+        SOTA_LOG("bootval: no saved OTA state yet");
         return;
     }
-    uint8_t  trial       = p.getUChar (kNvsKeyTrial,       0);
-    uint32_t prevPart    = p.getUInt  (kNvsKeyPrevPart,    0);
-    uint8_t  confirmPend = p.getUChar (kNvsKeyConfirmPend, 0);
-    String   pendDep     = p.getString(kNvsKeyFailDep,     "");
-    uint32_t pendBuild   = p.getUInt  (kNvsKeyFailBuild,   0);
+    SotaBootFacts facts = {};
+    facts.trial    = p.getUChar(kNvsKeyTrial, 0);
+    facts.staged   = p.getUChar(kNvsKeyStaged, 0);
+    facts.prevPart = p.getUInt (kNvsKeyPrevPart, 0);
+    const bool     confirmPend = p.getUChar (kNvsKeyConfirmPend, 0) != 0;
+    const String   dep         = p.getString(kNvsKeyFailDep, "");
+    const uint32_t build       = p.getUInt  (kNvsKeyFailBuild, 0);
     p.end();
 
-    // No trial in flight: the only thing that may be pending is a
-    // "confirmed" report from a successful apply() on a device with
-    // rollback disabled. Surface it for the next /check/ to report.
-    if (trial == 0) {
-        if (confirmPend && !pendDep.isEmpty() && pendBuild) {
-            _confirmedDep     = pendDep;
-            _confirmedBuild   = pendBuild;
-            _confirmedPending = true;
-            SOTA_LOG("bootval: confirmed report pending (deployment=%s build=%u)",
-                     pendDep.c_str(), (unsigned)pendBuild);
-        }
-        return;
-    }
-
-    // Rollback disabled: still process any trial state left in NVS from a
-    // prior boot when rollback was enabled, so stale state does not persist.
-    // trial=2: the old boot rolled back; still surface the report.
-    // trial=1: a trial was armed but we no longer roll back. Auto-confirm:
-    //          surface a "confirmed" report (the new image is running) and
-    //          wipe trial state.
-    if (!_rollbackEnabled) {
-        if (trial == 2) {
-            _rolledBackPending = true;
-            SOTA_LOG("bootval: rollback disabled; pending rolled_back report");
-        } else {
-            if (confirmPend && !pendDep.isEmpty() && pendBuild) {
-                _confirmedDep     = pendDep;
-                _confirmedBuild   = pendBuild;
-                _confirmedPending = true;
-                SOTA_LOG("bootval: rollback disabled; auto-confirming residual trial");
-            } else {
-                SOTA_LOG("bootval: rollback disabled; clearing residual trial state");
-            }
-            clearTrialState();
-        }
-        return;
-    }
-
-    if (trial == 2) {
-        // Rollback already happened; the report is pending until check()
-        // calls reportRolledBackIfPending(). Any confirm-pending flag set
-        // by the apply() that armed this trial is for the FAILED build:
-        // it is dropped by reportRolledBackIfPending() once the server accepts.
-        _rolledBackPending = true;
-        SOTA_LOG("bootval: rollback pending report");
-        return;
-    }
-
-    // trial == 1: this boot is the TRIAL boot of a new image. Verify we are
-    // running on a different partition than the snapshot.
     const esp_partition_t* running = esp_ota_get_running_partition();
-    if (!running) {
-        SOTA_LOG("bootval: no running partition; clearing trial state");
-        clearTrialState();
-        {   // Unrecoverable state: also wipe the confirm/fail context.
-            Preferences pf;
-            if (pf.begin(kNvsNamespace, /*readOnly=*/false)) {
-                pf.remove(kNvsKeyFailDep);
-                pf.remove(kNvsKeyFailBuild);
-                pf.remove(kNvsKeyConfirmPend);
-                pf.end();
-            }
+    const esp_partition_t* boot    = esp_ota_get_boot_partition();
+    facts.runningPart   = running ? running->address : 0;
+    facts.bootPart      = boot ? boot->address : 0;
+    facts.deepSleepWake = esp_reset_reason() == ESP_RST_DEEPSLEEP;
+
+    switch (sotaClassifyBoot(&facts)) {
+    case SOTA_BOOT_NONE:
+        // With rollback disabled, the last apply() left only the confirm context.
+        if (confirmPend) {
+            queueReport("confirmed", nullptr, dep.c_str(), build);
+            dropTrialRecord();
         }
+        return;
+    case SOTA_BOOT_REPORT_PENDING:
+        SOTA_LOG("bootval: a previous boot rolled back; queuing the report");
+        queueReport("rolled_back", "confirm_timeout", dep.c_str(), build);
+        dropTrialRecord();
+        return;
+    case SOTA_BOOT_ROLLED_BACK:
+        SOTA_LOG("bootval: back on the previous image; queuing the report");
+        restorePreviousIdentity();
+        queueReport("rolled_back", "confirm_timeout", dep.c_str(), build);
+        dropTrialRecord();
+        return;
+    case SOTA_BOOT_WAITING:
+        SOTA_LOG("bootval: the flashed update is waiting for its reboot");
+        s_updateWaiting = true;
+        return;
+    case SOTA_BOOT_ABANDONED:
+        // The record went in with the new identity before a slot switch
+        // that never happened.
+        SOTA_LOG("bootval: update cut short before its slot switch; dropping it");
+        abandonTrialRecord(sotaAbandonRestoresIdentity(facts.staged));
+        return;
+    case SOTA_BOOT_INCOMPLETE:
+        SOTA_LOG("bootval: dropping a trial record that cannot be checked");
+        dropTrialRecord();
+        return;
+    case SOTA_BOOT_TRIAL:
+        startTrial(facts.staged != 0, dep.c_str(), build);
+        return;
+    }
+}
+
+// First boot of the new image: supervise it, or accept it with rollback
+// disabled. deploymentId and build are the report context of the update.
+void SimpleOTAClient::startTrial(bool staged, const char* deploymentId, uint32_t build) {
+    // Power was lost after the slot switch, before sota_staged was removed.
+    if (staged) unstageTrialRecord();
+
+    if (!_rollbackEnabled) {
+        SOTA_LOG("bootval: rollback disabled; accepting the new image");
+        queueReport("confirmed", nullptr, deploymentId, build);
+        dropTrialRecord();
         return;
     }
 
-    if (prevPart == 0) {
-        // Snapshot was incomplete (e.g., power loss between writes). We
-        // can't safely rollback without a target; clear the flag and warn.
-        SOTA_LOG("bootval: trial set but prev_part missing; clearing");
-        clearTrialState();
-        {   // Cannot verify partition; wipe the confirm/fail context too.
-            Preferences pf;
-            if (pf.begin(kNvsNamespace, /*readOnly=*/false)) {
-                pf.remove(kNvsKeyFailDep);
-                pf.remove(kNvsKeyFailBuild);
-                pf.remove(kNvsKeyConfirmPend);
-                pf.end();
-            }
-        }
-        return;
-    }
-
-    if (running->address == prevPart) {
-        // Bootloader did not switch to the new partition (e.g., new image
-        // failed signature check). Treat as already-rolled-back.
-        SOTA_LOG("bootval: still on prev partition; reporting rollback");
-        // Restore the prev_* metadata into the live NVS keys so the device
-        // reports the build it's actually running.
-        Preferences rp;
-        if (rp.begin(kNvsNamespace, /*readOnly=*/false)) {
-            uint32_t pb = rp.getUInt  (kNvsKeyPrevBuild, 0);
-            String   ph = rp.getString(kNvsKeyPrevHash, "");
-            String   pv = rp.getString(kNvsKeyPrevVer,  "");
-            // Restore unconditionally: prev build 0 / empty strings are
-            // valid pre-OTA state (fresh device).
-            rp.putUInt  (kNvsKeyBuild,   pb);
-            rp.putString(kNvsKeyHash,    ph);
-            rp.putString(kNvsKeyVersion, pv);
-            rp.putUChar(kNvsKeyTrial, 2);
-            rp.end();
-        }
-        _rolledBackPending = true;
-        return;
-    }
-
-    // We're on the new image. Arm the trial.
     _inTrial = true;
     _confirmTimer = xTimerCreate("sota_confirm",
                                  sotaSecondsToTicks(_confirmTimeoutSec, configTICK_RATE_HZ),
@@ -1365,88 +1369,51 @@ void SimpleOTAClient::_confirmTimerCb(TimerHandle_t xTimer) {
     self->performRollback();
 }
 
-// Perform the rollback: set boot partition back to the snapshot, restore the
-// pre-OTA NVS keys, mark trial=2 so the next boot reports it, then reboot.
-// On any failure we still reboot; being stuck in a forever-trial state with
-// a broken image would be worse than a partial restore.
-void SimpleOTAClient::performRollback() {
-    Preferences p;
-    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) {
-        SOTA_LOG("rollback: NVS open failed; rebooting anyway");
-        esp_restart();
-        return;
-    }
-    uint32_t prevPart  = p.getUInt  (kNvsKeyPrevPart, 0);
-    uint32_t prevBuild = p.getUInt  (kNvsKeyPrevBuild, 0);
-    String   prevHash  = p.getString(kNvsKeyPrevHash, "");
-    String   prevVer   = p.getString(kNvsKeyPrevVer,  "");
-
-    if (prevPart != 0) {
-        // Walk the OTA partitions and pick the one matching prevPart.
-        const esp_partition_t* match = nullptr;
-        for (esp_partition_subtype_t st = ESP_PARTITION_SUBTYPE_APP_OTA_0;
-             st <= ESP_PARTITION_SUBTYPE_APP_OTA_15;
-             st = (esp_partition_subtype_t)(st + 1)) {
-            const esp_partition_t* part =
-                esp_partition_find_first(ESP_PARTITION_TYPE_APP, st, nullptr);
-            if (part && part->address == prevPart) { match = part; break; }
-        }
-        if (!match) {
-            // Also check the factory partition as a fallback.
-            const esp_partition_t* fac =
-                esp_partition_find_first(ESP_PARTITION_TYPE_APP,
-                                         ESP_PARTITION_SUBTYPE_APP_FACTORY,
-                                         nullptr);
-            if (fac && fac->address == prevPart) match = fac;
-        }
-
-        if (match) {
-            esp_err_t err = esp_ota_set_boot_partition(match);
-            if (err != ESP_OK) {
-                SOTA_LOG("rollback: set_boot_partition err=0x%x", (unsigned)err);
-            } else {
-                SOTA_LOG("rollback: boot partition set to 0x%x",
-                         (unsigned)match->address);
-            }
-        } else {
-            SOTA_LOG("rollback: no partition matches prev_part=0x%x",
-                     (unsigned)prevPart);
+// The app partition at a flash address, or nullptr.
+static const esp_partition_t* sotaFindAppPartition(uint32_t address) {
+    if (address == 0) return nullptr;
+    esp_partition_iterator_t it =
+        esp_partition_find(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+    const esp_partition_t* match = nullptr;
+    for (; it != nullptr; it = esp_partition_next(it)) {
+        const esp_partition_t* part = esp_partition_get(it);
+        if (part->address == address) {
+            match = part;
+            break;
         }
     }
-
-    // Restore the live NVS keys so the rolled-back image reports its real
-    // identity on next boot. Restore UNCONDITIONALLY: prev build 0 / empty
-    // strings are valid pre-OTA state (fresh device, first-ever update).
-    p.putUInt  (kNvsKeyBuild,   prevBuild);
-    p.putString(kNvsKeyHash,    prevHash);
-    p.putString(kNvsKeyVersion, prevVer);
-
-    // Mark trial=2 so the next boot's processBootValidation() queues the
-    // rolled_back report. fail_dep / fail_build are retained for the report.
-    p.putUChar(kNvsKeyTrial, 2);
-    p.end();
-
-    SOTA_LOG("rollback: rebooting");
-    // NVS data is persisted by p.end() above. Reboot immediately; delay()
-    // must not be called here as this function may run in the FreeRTOS timer
-    // service task where vTaskDelay is forbidden.
-    esp_restart();
+    esp_partition_iterator_release(it);
+    return match;
 }
 
-// Wipe the trial snapshot NVS keys (trial flag + prev_* image identity).
-// Does NOT touch the fail_* / conf_pend keys: those carry the confirm/rollback
-// POST context and must survive until the server accepts the report so the
-// event can be retried across reboots. reportConfirmedIfPending() and
-// reportRolledBackIfPending() are responsible for removing those keys.
-void SimpleOTAClient::clearTrialState() {
+// Switch back to the previous image, put its identity back, and set
+// sota_trial to 2 so the next boot reports the rollback, then restart. A
+// step that fails is logged and the restart still happens: a broken image
+// left running as an endless trial would be worse than a partial restore.
+// No delay(): this can run in the timer service task, which must not block.
+void SimpleOTAClient::performRollback() {
     Preferences p;
-    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return;
-    p.remove(kNvsKeyTrial);
-    p.remove(kNvsKeyPrevPart);
-    p.remove(kNvsKeyPrevBuild);
-    p.remove(kNvsKeyPrevHash);
-    p.remove(kNvsKeyPrevVer);
-    p.end();
+    uint32_t prevPart = 0;
+    if (p.begin(kNvsNamespace, /*readOnly=*/true)) {
+        prevPart = p.getUInt(kNvsKeyPrevPart, 0);
+        p.end();
+    }
+    const esp_partition_t* prev = sotaFindAppPartition(prevPart);
+    if (!prev) {
+        SOTA_LOG("rollback: no app partition at prev_part=0x%x", (unsigned)prevPart);
+    } else {
+        const esp_err_t err = esp_ota_set_boot_partition(prev);
+        SOTA_LOG("rollback: boot partition 0x%x (err=0x%x)",
+                 (unsigned)prev->address, (unsigned)err);
+    }
+
+    restorePreviousIdentity();
+    if (p.begin(kNvsNamespace, /*readOnly=*/false)) {
+        p.putUChar(kNvsKeyTrial, 2);  // fail_dep / fail_build stay for the report
+        p.end();
+    }
+    SOTA_LOG("rollback: rebooting");
+    esp_restart();
 }
 
 bool SimpleOTAClient::confirmRunning() {
@@ -1465,94 +1432,89 @@ bool SimpleOTAClient::confirmRunning() {
         xTimerDelete(_confirmTimer, 0);
         _confirmTimer = nullptr;
     }
-    // Capture the confirm context from NVS BEFORE clearTrialState() wipes
-    // it, so reportConfirmedIfPending() can POST a "confirmed" event for
-    // this deployment on the next successful /check/.
     Preferences p;
     if (p.begin(kNvsNamespace, /*readOnly=*/true)) {
-        _confirmedDep   = p.getString(kNvsKeyFailDep,   "");
-        _confirmedBuild = p.getUInt  (kNvsKeyFailBuild, 0);
+        const String   dep   = p.getString(kNvsKeyFailDep, "");
+        const uint32_t build = p.getUInt  (kNvsKeyFailBuild, 0);
         p.end();
-        if (!_confirmedDep.isEmpty() && _confirmedBuild != 0) {
-            _confirmedPending = true;
-        }
+        queueReport("confirmed", nullptr, dep.c_str(), build);
     }
-    clearTrialState();
+    dropTrialRecord();
     SOTA_LOG("confirmRunning: trial confirmed");
     return true;
 }
 
-// Report a rolled_back event if one is pending. Called from check() on each
-// successful round-trip. On accepted=true, clears fail_* + trial flag.
-void SimpleOTAClient::reportRolledBackIfPending() {
-    if (!_rolledBackPending) return;
+namespace {
+class LockGuard {
+public:
+    explicit LockGuard(SemaphoreHandle_t m) : _m(m) { xSemaphoreTake(_m, portMAX_DELAY); }
+    ~LockGuard() { xSemaphoreGive(_m); }
+    LockGuard(const LockGuard&) = delete;
+    LockGuard& operator=(const LockGuard&) = delete;
+private:
+    SemaphoreHandle_t _m;
+};
+}  // namespace
 
+void SimpleOTAClient::loadOutbox() {
+    LockGuard lock(_outboxLock);
+    sotaOutboxInit(&_outbox);
     Preferences p;
     if (!p.begin(kNvsNamespace, /*readOnly=*/true)) return;
-    String   failDep   = p.getString(kNvsKeyFailDep, "");
-    uint32_t failBuild = p.getUInt  (kNvsKeyFailBuild, 0);
+    SotaOutbox stored;
+    if (p.getBytes(kNvsKeyOutbox, &stored, sizeof(stored)) == sizeof(stored) &&
+        sotaOutboxValid(&stored)) {
+        _outbox = stored;
+    }
     p.end();
-
-    if (failDep.isEmpty() || failBuild == 0) {
-        // Nothing usable to report; clear everything so we don't loop forever.
-        SOTA_LOG("rolled_back: no failure context; clearing");
-        clearTrialState();
-        Preferences pf;
-        if (pf.begin(kNvsNamespace, /*readOnly=*/false)) {
-            pf.remove(kNvsKeyFailDep);
-            pf.remove(kNvsKeyFailBuild);
-            pf.remove(kNvsKeyConfirmPend);
-            pf.end();
-        }
-        _rolledBackPending = false;
-        return;
-    }
-
-    bool ok = sendStatusFor("rolled_back", "confirm_timeout",
-                            failDep.c_str(), failBuild);
-    if (ok) {
-        SOTA_LOG("rolled_back: server acknowledged");
-        clearTrialState();
-        Preferences pf;
-        if (pf.begin(kNvsNamespace, /*readOnly=*/false)) {
-            pf.remove(kNvsKeyFailDep);
-            pf.remove(kNvsKeyFailBuild);
-            pf.remove(kNvsKeyConfirmPend);
-            pf.end();
-        }
-        _rolledBackPending = false;
-    } else {
-        SOTA_LOG("rolled_back: server did not accept; will retry");
-    }
 }
 
-// Report a confirmed event if one is pending. Called from check() on each
-// successful round-trip. On accepted=true, clears _confirmedPending and the
-// underlying NVS keys (sota_conf_pend + sota_fail_*). The trial-path callers
-// (confirmRunning) already wipe NVS via clearTrialState() before this fires;
-// the rollback-disabled path relies on the NVS removals below.
-void SimpleOTAClient::reportConfirmedIfPending() {
-    if (!_confirmedPending) return;
-    if (_confirmedDep.isEmpty() || _confirmedBuild == 0) {
-        SOTA_LOG("confirmed: no deployment context; clearing");
-        _confirmedPending = false;
+// Callers hold _outboxLock.
+void SimpleOTAClient::saveOutbox() {
+    Preferences p;
+    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return;
+    if (_outbox.count == 0) {
+        p.remove(kNvsKeyOutbox);
+    } else {
+        p.putBytes(kNvsKeyOutbox, &_outbox, sizeof(_outbox));
+    }
+    p.end();
+}
+
+void SimpleOTAClient::queueReport(const char* event, const char* reason,
+                                  const char* deploymentId, uint32_t build) {
+    LockGuard lock(_outboxLock);
+    if (!sotaOutboxPush(&_outbox, event, reason, deploymentId, build)) {
+        SOTA_LOG("report: %s has no usable deployment context; not queued", event);
         return;
     }
-    bool ok = sendStatusFor("confirmed", nullptr,
-                            _confirmedDep.c_str(), _confirmedBuild);
-    if (ok) {
-        SOTA_LOG("confirmed: server acknowledged");
-        _confirmedPending = false;
-        _confirmedDep     = "";
-        _confirmedBuild   = 0;
-        Preferences p;
-        if (p.begin(kNvsNamespace, /*readOnly=*/false)) {
-            p.remove(kNvsKeyConfirmPend);
-            p.remove(kNvsKeyFailDep);
-            p.remove(kNvsKeyFailBuild);
-            p.end();
+    saveOutbox();
+    SOTA_LOG("report: queued %s (deployment=%s build=%u)",
+             event, deploymentId, (unsigned)build);
+}
+
+// Send queued reports, oldest first. Each is done once the server returns
+// any HTTP response. Without one, it stays queued for the next check().
+// The lock is not held while posting: the report is copied out, and popped
+// only if a report queued meanwhile has not pushed it out already.
+void SimpleOTAClient::sendPendingReports() {
+    for (;;) {
+        SotaReport r;
+        {
+            LockGuard lock(_outboxLock);
+            if (_outbox.count == 0) return;
+            r = _outbox.reports[0];
         }
-    } else {
-        SOTA_LOG("confirmed: server did not accept; will retry");
+        const int code = postStatus(r.event, r.reason[0] ? r.reason : nullptr,
+                                    r.deployment, r.build, nullptr);
+        if (!sotaReportDelivered(code)) {
+            SOTA_LOG("report: %s not delivered; will retry", r.event);
+            return;
+        }
+        LockGuard lock(_outboxLock);
+        if (_outbox.count > 0 && memcmp(&_outbox.reports[0], &r, sizeof(r)) == 0) {
+            sotaOutboxPop(&_outbox);
+            saveOutbox();
+        }
     }
 }

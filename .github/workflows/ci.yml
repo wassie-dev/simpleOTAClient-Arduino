@@ -42,6 +42,11 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror -Isrc -o test_time test/native/test_time.cpp
           ./test_time
 
+      - name: Build and run trial record and outbox tests
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror -Isrc -o test_trial test/native/test_trial.cpp
+          ./test_trial
+
   compile:
     name: Compile examples (ESP32)
     runs-on: ubuntu-latest

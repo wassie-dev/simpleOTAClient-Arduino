@@ -92,11 +92,11 @@ enum OTAResult {
     OTA_SUCCESS        = 0,  ///< Firmware flashed and validated. Auto-reboot restarts before this returns. With setAutoReboot(false), call rebootForUpdate().
     OTA_CHECKSUM_FAIL  = 1,  ///< Downloaded payload did not match expected SHA-256.
     OTA_FLASH_FAIL     = 2,  ///< Network or partition write failure.
-    OTA_NO_OFFER       = 3,  ///< No offer is stored, no flashed update is waiting for rebootForUpdate(), and no rolled_back report is still unaccepted.
+    OTA_NO_OFFER       = 3,  ///< No offer is stored, no flashed update is waiting for rebootForUpdate(), and no rolled_back report is waiting for an answer.
     OTA_SIGNATURE_FAIL = 4,  ///< Ed25519 signature verification failed; image rejected before it was marked bootable.
     OTA_UNCONFIRMED    = 5,  ///< Running firmware has not been confirmed. Call confirmRunning(), then apply() again. The offer is kept.
     OTA_REBOOT_PENDING = 6,  ///< An update is flashed and waits for rebootForUpdate() (setAutoReboot(false)). Nothing was written.
-    OTA_ROLLBACK_PENDING = 7 ///< A rolled_back report has not been accepted. The offer is kept. Nothing was flashed or reported.
+    OTA_ROLLBACK_PENDING = 7 ///< A rolled_back report is waiting for the server's answer. The offer is kept. Nothing was flashed or reported.
 };
 
 /**
@@ -161,10 +161,11 @@ public:
      * OTA_REBOOT_PENDING without downloading, because the next update slot
      * holds the waiting image.
      *
-     * While a rolled_back report has not been accepted, apply() returns
-     * OTA_ROLLBACK_PENDING. The offer is kept. Nothing is flashed and
-     * nothing is reported. The trial record and the saved reason stay
-     * until the server accepts that report, and are cleared only then.
+     * While a rolled_back report is waiting for the server's answer,
+     * apply() returns OTA_ROLLBACK_PENDING. The offer is kept. Nothing is
+     * flashed and nothing is reported. The report is dropped once the
+     * server accepts it or rejects it for good (accepted:false, or a 4xx
+     * other than 401, 403, 408, 429), and apply() can flash again.
      *
      * @return An OTAResult code. On OTA_SUCCESS with auto-reboot enabled
      *         (default), this function does not return.

@@ -131,10 +131,10 @@ void setup() {
                 Serial.println("[app] update already flashed; reboot to install it");
                 break;
             case OTA_ROLLBACK_PENDING:
-                // A rolled_back report has not been accepted. The offer is
-                // kept. check() retries the report; apply() can flash after
-                // the server accepts it.
-                Serial.println("[app] rollback report not accepted yet");
+                // A rolled_back report is waiting for the server's answer.
+                // The offer is kept. check() resends the report; apply() can
+                // flash once the server has accepted or rejected it.
+                Serial.println("[app] rollback report not answered yet");
                 break;
         }
     } else {

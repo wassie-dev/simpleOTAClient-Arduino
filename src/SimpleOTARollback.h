@@ -247,9 +247,9 @@ static inline const char* sotaReportRollbackReason(const char* stored)
  *
  * A flashed image waiting for rebootForUpdate() is first: a second apply()
  * with no new offer still returns that pending result.
- * An unaccepted rolled_back report is next, including when no offer is
+ * An unanswered rolled_back report is next, including when no offer is
  * stored. apply() then keeps the offer, flashes nothing, and reports
- * nothing, so the trial record and its reason stay as they are.
+ * nothing, so a new trial cannot overwrite that report's record.
  */
 typedef enum SotaApplyGuard {
     SOTA_APPLY_REBOOT_PENDING = 1,
@@ -327,26 +327,6 @@ static inline SotaStatusOutcome sotaStatusOutcome(
         return SOTA_STATUS_REJECTED;
     }
     return SOTA_STATUS_RETRY;
-}
-
-/**
- * The rolled_back trial record and sota_rb_why are removed only when the
- * server accepted the report. A retry or a rejection leaves both in place.
- * apply() does not remove the reason when it arms a later trial.
- */
-static inline bool sotaRollbackReportAccepted(int outcome)
-{
-    return outcome == SOTA_STATUS_ACCEPTED;
-}
-
-static inline bool sotaClearRollbackReason(bool reportAccepted)
-{
-    return reportAccepted;
-}
-
-static inline bool sotaClearTrialOnRollbackAccept(bool reportAccepted)
-{
-    return reportAccepted;
 }
 
 /**

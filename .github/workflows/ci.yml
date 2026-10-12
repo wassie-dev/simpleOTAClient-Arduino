@@ -1,5 +1,5 @@
 # Lints the library with arduino-lint and compiles all examples against
-# Arduino-ESP32 on every push and PR to main.
+# Arduino-ESP32 on every push to main and every pull request.
 
 name: CI
 
@@ -7,7 +7,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   lint:
@@ -24,7 +23,7 @@ jobs:
           compliance: strict
 
   native-test:
-    name: Host unit tests (signature verification)
+    name: Host unit tests
     runs-on: ubuntu-latest
 
     steps:
@@ -37,6 +36,11 @@ jobs:
               test/native/test_signing.cpp src/SimpleOTASigning.cpp \
               monocypher.o monocypher-ed25519.o
           ./test_signing
+
+      - name: Build and run tick conversion tests
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror -Isrc -o test_time test/native/test_time.cpp
+          ./test_time
 
   compile:
     name: Compile examples (ESP32)

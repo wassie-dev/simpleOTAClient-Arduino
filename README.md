@@ -232,6 +232,7 @@ Executes the offer stored by the most recent successful `check()`.
 | `OTA_FLASH_FAIL` | Network or flash write error. Partition was not committed. |
 | `OTA_NO_OFFER` | `check()` had not been called or returned `false`. |
 | `OTA_SIGNATURE_FAIL` | Ed25519 signature verification failed for a signed artifact. Partition was **not** committed; a `failed` event with reason `signature_invalid` was reported. Treat as a security signal, not flakiness. See [Signed firmware](#signed-firmware). |
+| `OTA_REBOOT_PENDING` | With `setAutoReboot(false)`, an earlier `apply()` flashed an update that is waiting for its reboot. Nothing was downloaded or reported, because the next update slot holds the waiting image. Call `rebootForUpdate()` to install it. |
 
 > **Note on `validated`:** this event is reported after `Update.end()` succeeds (meaning "the image was flashed cleanly"), not after a successful boot. A subsequent `reboot` event is emitted immediately before `esp_restart()` on the auto-reboot path; a `confirmed` event is emitted on the first 2xx `/check/` after a successful trial confirmation (see [Rollback](#rollback)).
 
@@ -261,20 +262,20 @@ Overrides the CA certificate used for HTTPS verification. By default the library
 
 ### `void setAutoReboot(bool enabled)`
 
-Default: `true`. When `false`, `apply()` returns `OTA_SUCCESS` without calling `esp_restart()`, giving the application control over when the reboot happens. The NVS build number write and `validated` event still occur before the function returns. The library does **not** emit a `reboot` event in this mode; use [`rebootForUpdate()`](#void-rebootforupdate) when the application is ready to restart so the server sees the same event sequence as the auto-reboot path.
+Default: `true`. When `false`, `apply()` returns `OTA_SUCCESS` without calling `esp_restart()`, giving the application control over when the reboot happens. The NVS build number write and `validated` event still occur before the function returns. The library does **not** emit a `reboot` event in this mode; use [`rebootForUpdate()`](#void-rebootforupdate) when the application is ready to restart so the server sees the same event sequence as the auto-reboot path. Until that reboot, further `apply()` calls return `OTA_REBOOT_PENDING` without downloading.
 
 ---
 
 ### `void rebootForUpdate()`
 
-Convenience for applications running with `setAutoReboot(false)`. Emits the `reboot` lifecycle event for the just-applied deployment, then calls `esp_restart()`. Does not return. Equivalent to:
+Convenience for applications running with `setAutoReboot(false)`. Emits the `reboot` lifecycle event for the update that is waiting, then calls `esp_restart()`. Does not return. Equivalent to:
 
 ```cpp
 ota.report("reboot");
 ESP.restart();
 ```
 
-Must be called in the post-apply window (between a successful `apply()` and the next `check()`); outside that window the status POST is silently skipped and the device still reboots.
+The event names the waiting update's deployment even after later `check()` calls, or after `end()` and `begin()`. With no update waiting nothing is posted; the device reboots either way.
 
 ---
 

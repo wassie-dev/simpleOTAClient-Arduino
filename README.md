@@ -4,7 +4,7 @@
 
 ![Platform: ESP32](https://img.shields.io/badge/platform-ESP32-blue)
 ![Framework: Arduino](https://img.shields.io/badge/framework-Arduino-teal)
-![Version: 0.4.0](https://img.shields.io/badge/version-0.4.0-green)
+![Version: 0.5.0](https://img.shields.io/badge/version-0.5.0-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 Integrates your ESP32 project with SimpleOTA in a few lines: check for an update, stream and flash it with on-the-fly SHA-256 verification, and let the library handle all the protocol bookkeeping. The application owns Wi-Fi and decides when to check; this library does the rest.
@@ -35,6 +35,7 @@ Signing here protects the delivery path. It is not Secure Boot. They stack if yo
 - [Security](#security)
   - [Signed firmware](#signed-firmware)
 - [Rollback](#rollback)
+  - [Testing rollback](#testing-rollback)
 - [Configuration](#configuration)
 - [Logging](#logging)
 - [Partition table](#partition-table)
@@ -50,8 +51,8 @@ Signing here protects the delivery path. It is not Secure Boot. They stack if yo
 - **Streaming download with on-the-fly SHA-256:** firmware is verified before the partition is committed; no second pass, no large RAM buffer.
 - **NVS build-number persistence:** the library reads and writes the SimpleOTA-assigned build number automatically.
 - **Status event reporting:** reports the full update lifecycle back to the SimpleOTA backend.
-- **On-device firmware signature verification (v0.4.0):** signed artifacts are verified against your pinned Ed25519 public key, streamed during download, before the image is ever marked bootable. See [Signed firmware](#signed-firmware).
-- **Trial install with timeout-based rollback:** the library snapshots the previous image before applying, then rolls back to it if `confirmRunning()` is not called within the configurable timeout. See [Rollback](#rollback).
+- **On-device firmware signature verification:** signed artifacts are verified against your pinned Ed25519 public key, streamed during download, before the image is ever marked bootable. See [Signed firmware](#signed-firmware).
+- **Trial install with timeout-based rollback:** the library records the previous image before switching to the new one, then rolls back to it if the new image crashes, hangs, or does not call `confirmRunning()` within the configurable timeout. See [Rollback](#rollback).
 - **No external dependencies:** uses libraries bundled with the Arduino-ESP32 core (`HTTPClient`, `Update`, `NetworkClientSecure` / `WiFiClientSecure`, `Preferences`, `mbedtls`), plus a vendored copy of [Monocypher](https://monocypher.org) 3.1.3 for Ed25519; nothing to install.
 - **Compatible with Arduino-ESP32 2.x and 3.x**.
 - **Secure by default:** the bundled ISRG Root X1 root CA is used automatically; no configuration needed for production.
@@ -177,7 +178,9 @@ SimpleOTA assigns its own **strictly monotonic build number** each time you uplo
 | --- | --- |
 | Factory-fresh device (empty NVS) | Library sends `current_build_number: 0` |
 | After a successful `apply()` | Library writes the build number from the check response into NVS (`simpleota` / `sota_build`, uint32) |
+| With `setAutoReboot(false)`, while the update waits for `rebootForUpdate()` | `sota_build` already holds the flashed build and `check()` sends it, so the server does not offer that build again before the reboot |
 | Every subsequent `check()` | Library reads `sota_build` from NVS and sends it |
+| Firmware installed another way (USB, ArduinoOTA, or the `Update` class directly) | `sota_build` does not change: the library keeps sending the last build it installed itself, or 0 if it has not installed one |
 
 **Do not write to the `simpleota`/`sota_build` NVS key from your own code.** Overwriting it with any value other than one the server gave you will break the server's comparison: the device will either never receive another update, or be offered a build it already has.
 
@@ -235,7 +238,7 @@ Executes the offer stored by the most recent successful `check()`.
 | `OTA_UNCONFIRMED` | The running firmware is on trial and has not been confirmed. Nothing was downloaded or reported, because the other slot holds the previous firmware the trial may still return to. Call `confirmRunning()`, then `apply()` again; the offer is kept. |
 | `OTA_REBOOT_PENDING` | With `setAutoReboot(false)`, an earlier `apply()` flashed an update that is waiting for its reboot. Nothing was downloaded or reported, because the next update slot holds the waiting image. Call `rebootForUpdate()` to install it. |
 
-> **Note on `validated`:** this event is reported after `Update.end()` succeeds (meaning "the image was flashed cleanly"), not after a successful boot. A subsequent `reboot` event is emitted immediately before `esp_restart()` on the auto-reboot path; a `confirmed` event is emitted on the first 2xx `/check/` after a successful trial confirmation (see [Rollback](#rollback)).
+> **Note on `validated`:** this event is reported after `Update.end()` succeeds (meaning "the image was flashed cleanly"), not after a successful boot. A subsequent `reboot` event is emitted immediately before `esp_restart()` on the auto-reboot path; a `confirmed` event follows once the trial is confirmed (see [Rollback](#rollback)).
 
 ---
 
@@ -251,7 +254,7 @@ Full event vocabulary defined by the API:
 offered  download_started  downloaded  flashed  validated  reboot  confirmed  failed  rolled_back
 ```
 
-Events emitted automatically by `apply()`: `download_started`, `downloaded`, `flashed`, `validated`, `failed`, and (on the auto-reboot path) `reboot`. The `confirmed` event is emitted by the library on the first 2xx `/check/` after a successful trial confirmation (see [Rollback](#rollback)); `rolled_back` is emitted on the first 2xx `/check/` after a trial-timeout rollback.
+Events emitted automatically by `apply()`: `download_started`, `downloaded`, `flashed`, `validated`, `failed`, and (on the auto-reboot path) `reboot`. The library also queues `confirmed` when a trial is confirmed and `rolled_back` after a rollback, and sends them at the start of the next `check()` (see [Server interaction](#server-interaction)).
 
 ---
 
@@ -358,25 +361,25 @@ Enables or disables verbose `[SimpleOTAClient]` logging on `Serial` at runtime. 
 
 ### `void setRollbackEnabled(bool enabled)`
 
-Enables or disables the library-managed trial-install / rollback machinery. Default: `true`. See [Rollback](#rollback). When `false`, `apply()` skips the pre-OTA snapshot and `confirmRunning()` always returns `false` (no trial is ever armed). The `confirmed` event is still emitted on the first 2xx `/check/` after a reboot, via the NVS-backed deferred path.
+Enables or disables the library-managed trial-install / rollback machinery. Default: `true`. See [Rollback](#rollback). When `false`, `apply()` saves no trial record and `confirmRunning()` always returns `false` (no trial is ever started). The new image is accepted on its first boot, which queues a `confirmed` event.
 
 ---
 
 ### `void setManagedAutoConfirm(bool enabled)`
 
-In managed mode (`begin()`), controls whether the library automatically calls `confirmRunning()` on the first 2xx response from `/api/v1/ota/check/` after a trial boot. Default: `true`. Set to `false` to require an explicit `confirmRunning()` call from your application code instead. No effect in polling mode (where you always call `confirmRunning()` yourself).
+In managed mode (`begin()`), controls whether the library automatically calls `confirmRunning()` on the first successful response (HTTP 200) from `/api/v1/ota/check/` after a trial boot. Default: `true`. Set to `false` to require an explicit `confirmRunning()` call from your application code instead. No effect in polling mode (where you always call `confirmRunning()` yourself).
 
 ---
 
 ### `void setConfirmTimeout(uint32_t seconds)`
 
-Sets the per-instance trial-install confirm timeout in seconds. Defaults to `SIMPLEOTA_CONFIRM_TIMEOUT_S` (compile-time default `300`). Clamped to `[10, 86400]`. Effective starting with the next `apply()`. See [Rollback](#rollback).
+Sets the per-instance trial-install confirm timeout in seconds. Defaults to `SIMPLEOTA_CONFIRM_TIMEOUT_S` (compile-time default `300`). Clamped to `[10, 86400]`. On a trial boot, call it before `begin()` in managed mode, or before the first `check()`, `apply()`, `isTrialInstall()` or `confirmRunning()` in polling mode; the trial's timer starts then. See [Rollback](#rollback).
 
 ---
 
 ### `bool confirmRunning()`
 
-Confirms that the currently-running firmware is healthy and seals the trial install. Cancels the rollback timer, clears the trial snapshot (`prev_*` keys and trial flag) from NVS, and queues a `confirmed` status event for the next successful `/check/` round-trip. Returns `true` if a trial was in progress and is now confirmed; `false` if no trial was in progress (a normal boot — this is a safe no-op).
+Confirms that the currently-running firmware is healthy and ends the trial install. Tells the bootloader the image is good, stops the rollback timer and the chip watchdog, clears the trial record from NVS, and queues a `confirmed` status event, sent at the start of the next `check()`. Returns `true` if a trial was in progress and is now confirmed. Returns `false` on a normal boot (a safe no-op), and also when the bootloader could not record the image as good; the trial then carries on and you can call it again.
 
 Call from your application code once you are satisfied the new firmware is working. In polling mode this is required after every successful OTA; in managed mode it is only required if you have called `setManagedAutoConfirm(false)`.
 
@@ -394,7 +397,7 @@ Starts a FreeRTOS background task (stack: 8 KB, priority: 1) that runs the follo
 
 1. **If `initialDelayMs` > 0**, sleep for that many milliseconds (one-shot, at task start only). Use this to stagger the first HTTPS request relative to other TLS sessions starting concurrently at boot (e.g. MQTT). Default: `0`.
 2. If `isConnected` was supplied, wait until it returns `true` (polled every second). Otherwise skip this step.
-3. **If a trial install is in progress**, run a short-retry inner loop: retry `/check/` every `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` seconds (default 10 s) until the server responds with 2xx or the confirm timeout expires. With `setManagedAutoConfirm(true)` (default), call `confirmRunning()` on the first 2xx, send the `confirmed` event straight away, and `apply()` an update that check offered; that check counts as this cycle's, so the loop goes on to step 6. Skip this step on a normal (non-trial) boot.
+3. **If a trial install is in progress**, run a short-retry inner loop: retry `/check/` every `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` seconds (default 10 s) until the server responds with HTTP 200 or the confirm timeout expires. With `setManagedAutoConfirm(true)` (default), call `confirmRunning()` on the first such response, send the `confirmed` event straight away, and `apply()` an update that check offered; that check counts as this cycle's, so the loop goes on to step 6. Skip this step on a normal (non-trial) boot.
 4. Call `check()`. If an update is available, call `apply()`.
 5. If `onResult` is set and `apply()` returned without rebooting, invoke it with the `OTAResult`.
 6. Sleep for `checkIntervalSec` seconds, then repeat.
@@ -427,7 +430,7 @@ The sequence of events reported to the server during a successful `apply()`:
 check()  →  download_started  →  downloaded  →  flashed  →  validated  →  reboot  →  [esp_restart()]  →  confirmed
 ```
 
-The terminal `confirmed` event fires on the first 2xx `/check/` after the new image boots successfully and `confirmRunning()` runs (managed mode does this automatically by default; polling mode requires an explicit call). If the trial times out instead, the library rolls back and a `rolled_back` event takes the place of `confirmed`.
+The terminal `confirmed` event is queued when `confirmRunning()` runs on the new image (managed mode does this automatically by default; polling mode requires an explicit call) and sent at the start of the next `check()`. If the trial fails instead, the device returns to the previous firmware and a `rolled_back` event takes the place of `confirmed`.
 
 On failure at any stage, a `failed` event is reported with a short reason token before the method returns:
 
@@ -442,9 +445,11 @@ On failure at any stage, a `failed` event is reported with a short reason token 
 | `download_stalled` | No bytes received within `SIMPLEOTA_TIMEOUT_MS` |
 | `short_read` | Stream closed before `Content-Length` bytes arrived |
 | `checksum_mismatch` | SHA-256 of received bytes did not match server's value |
+| `signature_invalid` | Signed artifact failed Ed25519 verification, or no key is pinned; see [Signed firmware](#signed-firmware) |
+| `state_save_failed` | The trial record could not be saved to NVS before the slot switch |
 | `update_end_failed` | `Update.end()` failed after streaming completed |
 
-If [rollback](#rollback) is enabled and a trial install is not confirmed within the timeout, the library reboots into the previous partition and queues a separate `rolled_back` event with reason `confirm_timeout`, sent by the next `check()`.
+If [rollback](#rollback) is enabled and a trial install crashes, hangs, or is not confirmed within the timeout, the device returns to the previous partition and queues a separate `rolled_back` event, sent by the next `check()`. Its reason says what ended the trial; see [Server interaction](#server-interaction).
 
 ---
 
@@ -476,7 +481,7 @@ This mode exists only to simplify local development. **Do not use it in producti
 
 ### Signed firmware
 
-Since v0.4.0 the library verifies **Ed25519 firmware signatures on the device**, upgrading the integrity guarantee from "trust the TLS channel" to "trust only images approved by the holder of the project's private signing key". Even a fully compromised delivery path (server, storage, TLS) cannot make the device flash an unapproved image.
+The library verifies **Ed25519 firmware signatures on the device**, upgrading the integrity guarantee from "trust the TLS channel" to "trust only images approved by the holder of the project's private signing key". Even a fully compromised delivery path (server, storage, TLS) cannot make the device flash an unapproved image.
 
 Setup ([full guide](https://wiki.simpleota.com/guides/signed-firmware/)):
 
@@ -540,7 +545,7 @@ Ed25519 verification uses a vendored, unmodified copy of [Monocypher](https://mo
 
 ## Rollback
 
-The library supports a **library-managed trial install with timeout-based rollback**. Before `apply()` switches the boot slot to the new image, it saves a trial record: the outgoing image's partition address and NVS metadata. A power cut at any point therefore leaves either the old image running or the new image on trial, never the new image unsupervised. Then it reboots into the new firmware. The new boot enters a "trial" state: if the application calls `confirmRunning()` before `SIMPLEOTA_CONFIRM_TIMEOUT_S` (default 300 s), the trial is sealed and the snapshot is discarded. Otherwise the library restores the previous partition and reboots back into it.
+The library supports a **library-managed trial install with timeout-based rollback**. Before `apply()` switches the boot slot to the new image, it saves a trial record: the outgoing image's partition address and identity (build number, hash, version label). A power cut at any point therefore leaves either the old image running or the new image on trial, never the new image unsupervised. Then it reboots into the new firmware. The new boot enters a "trial" state: if the application calls `confirmRunning()` before `SIMPLEOTA_CONFIRM_TIMEOUT_S` (default 300 s), the image is accepted and the trial record is cleared. Otherwise the library switches back to the previous partition and reboots into it.
 
 The stock Arduino-ESP32 bootloader can switch back to the previous firmware by itself, but the core normally accepts every new image before `setup()` runs. The library tells the core to leave a SimpleOTA trial on probation (it defines `verifyRollbackLater()`), and only a SimpleOTA trial: an image written by ArduinoOTA or another updater is accepted as usual. So a crash or a reset at any point before `confirmRunning()`, including in a global constructor or early in `setup()`, makes the bootloader return to the previous firmware on the next boot. The `rolled_back` report then carries the reset that ended the trial: `panic`, `int_wdt`, `task_wdt`, `watchdog`, `brownout`, `power_on`, `deep_sleep` or `reset`. Deep sleep also ends a trial: an image that wakes from deep sleep before `confirmRunning()` goes back to the previous firmware, with the reason `deep_sleep`, so confirm before sleeping. `confirmRunning()` tells the bootloader the image is good first; if that fails, it returns `false` and the trial carries on.
 
@@ -566,7 +571,7 @@ If you never call `confirmRunning()`, every successful OTA will roll back.
 
 ### Managed mode (default)
 
-`begin()` runs the trial loop on its own. By default it auto-confirms the trial as soon as the OTA task gets its first 2xx response from `/api/v1/ota/check/`, which transitively proves boot, connectivity, TLS, token auth, and server reachability. No app code change is needed.
+`begin()` runs the trial loop on its own. By default it auto-confirms the trial as soon as the OTA task gets its first successful response (HTTP 200) from `/api/v1/ota/check/`, which transitively proves boot, connectivity, TLS, token auth, and server reachability. No app code change is needed.
 
 To gate confirmation on your own application-level health check instead:
 
@@ -588,9 +593,25 @@ The default 300 s timeout assumes Wi-Fi. For cellular or other transports where 
 
 ### Server interaction
 
-When the library rolls back, the previous boot's snapshot is restored to the partition and to NVS (build number, hash, version label), and a `rolled_back` status event with the failed deployment's `deployment_id` and `build_number` and a reason of `confirm_timeout` is queued. On a successful trial (`confirmRunning()` ran), a `confirmed` event is queued.
+After a rollback the previous image's identity (build number, hash, version label) is restored in NVS, and a `rolled_back` status event with the failed deployment's `deployment_id` and `build_number` is queued. Its reason is `confirm_timeout` when the confirm timer ran out, otherwise the reset that ended the trial (see above). On a successful trial (`confirmRunning()` ran), a `confirmed` event is queued.
 
 Queued events are kept in NVS, at most two, oldest dropped first, and sent at the start of each `check()`. An event counts as delivered as soon as the server returns any HTTP response; the library does not act on what the response says. An event that gets no response stays queued for the next `check()`. Queued events never hold up an update.
+
+### Testing rollback
+
+Before relying on rollback in the field, try each way a trial can fail on one device of every board you ship. Deploy a known-good build first, then try each of these from it and watch the serial log and the dashboard:
+
+| Test | Expected result |
+| --- | --- |
+| Calls `confirmRunning()` as usual | Stays on the new build; `confirmed` |
+| Never calls `confirmRunning()` (managed mode with `setManagedAutoConfirm(false)`) | Back on the known-good build after the confirm time; `rolled_back` with `confirm_timeout` |
+| Calls `abort()` early in `setup()` | Back on the known-good build after one reset; `rolled_back` with `panic` |
+| Hangs in `setup()` (`for (;;) {}`) | Back on the known-good build; `rolled_back` with `confirm_timeout`, or with the watchdog reset that caught the hang |
+| Calls `disableCore0WDT()`, then starts a task at the highest priority on each core that spins forever, so the confirm timer cannot run either | Back on the known-good build after the confirm time plus the watchdog margin; `rolled_back` with `watchdog` |
+| Loses power before `confirmRunning()` | Back on the known-good build; `rolled_back` with `power_on` |
+| Loses power during the download | Stays on the known-good build and downloads the update again on a later check |
+
+Keep the confirm time short while testing, for example `setConfirmTimeout(60)`, and turn on [logging](#logging) to see each boot classified. Run the table once on a device that still has 0.4.0, so the first update into this release is covered too. If your devices use deep sleep, also deep-sleep a test build before it confirms: it should wake on the known-good build, with `rolled_back` and `deep_sleep`.
 
 ### Disabling rollback
 
@@ -600,7 +621,7 @@ If you do not want the rollback machinery at all:
 ota.setRollbackEnabled(false);
 ```
 
-This skips the snapshot in `apply()` and the trial-boot arming entirely. Any residual trial state left in NVS from a previous boot with rollback enabled is cleaned up automatically by `processBootValidation()` on the next boot — no manual NVS clearing is needed.
+`apply()` then saves no trial record, and the new image is accepted on its first boot, which queues a `confirmed` event. A trial record left by an earlier boot with rollback enabled is cleared on the next boot; no manual NVS clearing is needed.
 
 ---
 

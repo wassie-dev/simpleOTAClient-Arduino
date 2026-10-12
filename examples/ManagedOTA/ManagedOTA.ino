@@ -52,8 +52,8 @@ void setup() {
 
     ota.setVersionLabel(FIRMWARE_VERSION);
 
-    // Rollback (v0.2.0+) is enabled by default. In managed mode the library
-    // auto-confirms the trial as soon as the OTA task gets its first 2xx
+    // Rollback is enabled by default. In managed mode the library
+    // auto-confirms the trial as soon as the OTA task gets its first 200
     // response from the server — proof that boot, connectivity, TLS, and token
     // auth are all working. If you want to gate confirmation on your own
     // application-level health check, call:

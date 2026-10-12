@@ -1,7 +1,7 @@
 // RollbackOTA: managed-mode with an APPLICATION-defined health gate.
 //
 // This sketch shows how to override the default managed-mode auto-confirm
-// (which fires on the first 2xx /check/ response) so the trial only completes
+// (which fires on the first successful /check/ response) so the trial only completes
 // after your own application-level health check passes. If the health check
 // does not pass within SIMPLEOTA_CONFIRM_TIMEOUT_S (or your override), the
 // library reboots into the previous firmware partition.
@@ -50,7 +50,7 @@ void setup() {
     ota.setVersionLabel(FIRMWARE_VERSION);
 
     // Disable managed auto-confirm so the library waits for our explicit
-    // confirmRunning() call instead of confirming on the first 2xx /check/.
+    // confirmRunning() call instead of confirming on the first successful /check/.
     ota.setManagedAutoConfirm(false);
 
     // Give the application 120 seconds to call confirmRunning() after a

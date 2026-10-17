@@ -28,6 +28,7 @@
 #include "SimpleOTASigning.h"
 #include "SimpleOTATime.h"
 #include "SimpleOTATrial.h"
+#include "SimpleOTAWatchdog.h"
 
 #include "sdkconfig.h"
 #include "nvs.h"
@@ -1237,9 +1238,33 @@ extern "C" bool verifyRollbackLater() {
     if (nvs_flash_init() != ESP_OK) return false;
     SotaBootFacts facts;
     sotaReadBootFacts(&facts);
-    return sotaHoldPendingImage(sotaRunningImagePending(), sotaClassifyBoot(&facts));
+    const bool hold =
+        sotaHoldPendingImage(sotaRunningImagePending(), sotaClassifyBoot(&facts));
+    // A held trial gets the chip watchdog straight away, so a hang before
+    // the sketch reaches the library is reset too. setConfirmTimeout() is
+    // not known yet: the compile-time default applies until boot validation.
+    if (hold) {
+        sota_wdt_arm(SIMPLEOTA_CONFIRM_TIMEOUT_S);
+    } else {
+        sota_wdt_quiesce();
+    }
+    return hold;
 }
 #endif
+
+// Restart the chip watchdog with this instance's confirm time. It only helps
+// while the bootloader can return to the previous image.
+void SimpleOTAClient::armTrialWatchdog() {
+#if SOTA_BOOTLOADER_ROLLBACK
+    if (!sotaRunningImagePending()) return;
+    sota_wdt_arm(_confirmTimeoutSec);
+    if (sota_wdt_is_clamped()) {
+        Serial.printf("[SimpleOTAClient] confirm timeout %us is longer than the chip "
+                      "watchdog can wait; it resets the chip at its limit.\n",
+                      (unsigned)_confirmTimeoutSec);
+    }
+#endif
+}
 
 // Write the trial record, with the new image's identity as the live one,
 // before Update.end() switches the boot slot, so a bootable new image always
@@ -1363,8 +1388,10 @@ void SimpleOTAClient::processBootValidation() {
 
     SotaBootFacts facts;
     sotaReadBootFacts(&facts);
+    const SotaBootOutcome outcome = sotaClassifyBoot(&facts);
+    if (outcome != SOTA_BOOT_TRIAL) sota_wdt_disarm();
 
-    switch (sotaClassifyBoot(&facts)) {
+    switch (outcome) {
     case SOTA_BOOT_NONE:
         // With rollback disabled, the last apply() left only the confirm context.
         if (confirmPend) {
@@ -1422,6 +1449,7 @@ void SimpleOTAClient::startTrial(bool staged, const char* deploymentId, uint32_t
 
     if (!_rollbackEnabled) {
         SOTA_LOG("bootval: rollback disabled; accepting the new image");
+        sota_wdt_disarm();
         sotaMarkRunningValid();
         queueReport("confirmed", nullptr, deploymentId, build);
         dropTrialRecord();
@@ -1429,6 +1457,7 @@ void SimpleOTAClient::startTrial(bool staged, const char* deploymentId, uint32_t
     }
 
     _inTrial = true;
+    armTrialWatchdog();
     _confirmTimer = xTimerCreate("sota_confirm",
                                  sotaSecondsToTicks(_confirmTimeoutSec, configTICK_RATE_HZ),
                                  pdFALSE,   // one-shot
@@ -1545,6 +1574,7 @@ bool SimpleOTAClient::confirmRunning() {
         }
         return false;
     }
+    sota_wdt_disarm();
     portENTER_CRITICAL(&_trialMux);
     _inTrial = false;
     _trialEnding = false;

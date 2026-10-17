@@ -16,3 +16,5 @@
 - An unconfirmed trial image that wakes from deep sleep goes back to the previous firmware and reports `deep_sleep`. The core's bootloader resumes the image on a deep-sleep wake, so without this a device that sleeps before confirming would get a new confirm time on every wake and never roll back.
 - `confirmRunning()` tells the bootloader first and returns `false`, with the trial still running, if it cannot.
 - `apply()` returns the new `OTA_UNCONFIRMED` during a trial, without downloading, so the previous firmware stays available to return to.
+- A hang during a trial is reset by the chip's RTC or LP watchdog, armed before `setup()` for the confirm time plus a margin, and the bootloader returns to the previous firmware; the report says `watchdog`. It stops on `confirmRunning()` and, on core 3.x, before deep sleep. A confirm time past the watchdog's limit (about 8 h) prints a warning. Build with `-DSIMPLEOTA_DISABLE_TRIAL_WATCHDOG` to leave it out.
+- Polling sketches must call `confirmRunning()` within the confirm time: one that first calls the library later than the confirm time plus its margin is reset by the watchdog and rolled back.

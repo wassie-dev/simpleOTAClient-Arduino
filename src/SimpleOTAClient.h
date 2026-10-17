@@ -575,6 +575,7 @@ private:
     void restorePreviousIdentity();    ///< Back on the previous image: restore its build/hash/version.
     void performRollback(const char* reason);  ///< Switch back to the previous image and reboot; reason goes in the rolled_back report.
     void startTrial(bool staged, const char* deploymentId, uint32_t build); ///< First boot of the new image.
+    void armTrialWatchdog();           ///< Restart the chip watchdog for this trial.
     void loadOutbox();
     void saveOutbox();
     void queueReport(const char* event, const char* reason,

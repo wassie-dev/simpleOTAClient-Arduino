@@ -26,6 +26,7 @@
 #include <esp_partition.h>
 
 #include "SimpleOTASigning.h"
+#include "SimpleOTATime.h"
 
 // ---------------------------------------------------------------------------
 // Logging
@@ -65,6 +66,12 @@ static const char* kNvsKeyPrevVer     = "sota_prev_ver";    // string
 static const char* kNvsKeyFailDep     = "sota_fail_dep";    // string
 static const char* kNvsKeyFailBuild   = "sota_fail_build";  // uint32
 static const char* kNvsKeyConfirmPend = "sota_conf_pend";   // uint8: 1 if a "confirmed" report is pending
+
+// A flashed update waits for its reboot: the boot slot already points at it.
+// The next update slot holds it, so nothing may be downloaded until the
+// reboot. File scope, because it describes this boot, not one instance: an
+// instance created after end() and begin(), or a second one, sees it too.
+static bool s_updateWaiting = false;
 
 uint32_t SimpleOTAClient::readBuildNumber() {
     Preferences p;
@@ -447,7 +454,9 @@ void SimpleOTAClient::_taskLoop() {
     // Defer the first check if the caller requested an initial delay. This
     // avoids lwIP contention (e.g. udp_remove assert) when other TLS
     // sessions (MQTT, etc.) are starting concurrently at boot.
-    if (_initialDelayMs > 0) vTaskDelay(pdMS_TO_TICKS(_initialDelayMs));
+    if (_initialDelayMs > 0) {
+        vTaskDelay(sotaMillisToTicks(_initialDelayMs, configTICK_RATE_HZ));
+    }
 
     // While a trial is in progress, run the trial loop (short retry interval,
     // auto-confirm on first 2xx from /check/). Once the trial resolves, fall
@@ -464,7 +473,7 @@ void SimpleOTAClient::_taskLoop() {
         // handling to absorb a missing connection.
         if (_isConnected) {
             while (!_isConnected()) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                vTaskDelay(sotaMillisToTicks(1000, configTICK_RATE_HZ));
             }
         }
 
@@ -473,7 +482,7 @@ void SimpleOTAClient::_taskLoop() {
             if (_onResult) _onResult(r);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(_checkIntervalSec * 1000UL));
+        vTaskDelay(sotaSecondsToTicks(_checkIntervalSec, configTICK_RATE_HZ));
     }
 }
 
@@ -490,7 +499,7 @@ void SimpleOTAClient::_trialLoop() {
         // so a forever-disconnected transport does not spin past it.
         if (_isConnected) {
             while (!_isConnected() && (int32_t)(deadlineMs - millis()) > 0) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                vTaskDelay(sotaMillisToTicks(1000, configTICK_RATE_HZ));
             }
         }
         if ((int32_t)(deadlineMs - millis()) <= 0) break;
@@ -517,7 +526,7 @@ void SimpleOTAClient::_trialLoop() {
         uint32_t remaining = deadlineMs - now;
         uint32_t sleep = SIMPLEOTA_TRIAL_RETRY_INTERVAL_S * 1000UL;
         if (sleep > remaining) sleep = remaining;
-        vTaskDelay(pdMS_TO_TICKS(sleep));
+        vTaskDelay(sotaMillisToTicks(sleep, configTICK_RATE_HZ));
     }
 
     // Either confirmRunning() was called externally (drops _inTrial) or the
@@ -814,16 +823,25 @@ bool SimpleOTAClient::report(const char* event, const char* reason) {
     return sendStatus(event, reason);
 }
 
-// Convenience for applications using setAutoReboot(false): emit the same
-// "reboot" event apply() would emit on the auto-reboot path, then restart.
-// Does not return. Skips the status POST silently if no deployment context
-// is available (e.g. called outside the post-apply window) so the reboot
-// itself is still honored.
+// For setAutoReboot(false): emit the "reboot" event apply() emits on the
+// auto-reboot path, then restart. Does not return. The event belongs to the
+// waiting update, and a check() after apply() replaces the current offer,
+// so its deployment comes from the context apply() saved.
 void SimpleOTAClient::rebootForUpdate() {
-    if (!_deploymentId.isEmpty()) {
-        sendStatus("reboot", nullptr);
+    String   dep;
+    uint32_t build = 0;
+    if (s_updateWaiting) {
+        Preferences p;
+        if (p.begin(kNvsNamespace, /*readOnly=*/true)) {
+            dep   = p.getString(kNvsKeyFailDep, "");
+            build = p.getUInt  (kNvsKeyFailBuild, 0);
+            p.end();
+        }
+    }
+    if (!dep.isEmpty()) {
+        sendStatusFor("reboot", nullptr, dep.c_str(), build);
     } else {
-        SOTA_LOG("rebootForUpdate: no deployment context; skipping status post");
+        SOTA_LOG("rebootForUpdate: no update is waiting; rebooting without a status post");
     }
     SOTA_LOG("rebootForUpdate: rebooting");
     delay(100);
@@ -837,6 +855,13 @@ void SimpleOTAClient::rebootForUpdate() {
 // ---------------------------------------------------------------------------
 
 OTAResult SimpleOTAClient::apply() {
+    // The next update slot is the one after the running image. While a
+    // flashed image waits for its reboot, that slot holds it, and another
+    // download would erase it.
+    if (s_updateWaiting) {
+        SOTA_LOG("apply: an update is waiting for rebootForUpdate(); not flashing");
+        return OTA_REBOOT_PENDING;
+    }
     if (!_hasOffer) {
         SOTA_LOG("apply: no offer");
         return OTA_NO_OFFER;
@@ -1062,6 +1087,7 @@ OTAResult SimpleOTAClient::apply() {
         clearOffer();
         return OTA_FLASH_FAIL;
     }
+    s_updateWaiting = true;
 
     sendStatus("flashed", nullptr);
 
@@ -1176,6 +1202,11 @@ void SimpleOTAClient::snapshotPreOtaState() {
 void SimpleOTAClient::processBootValidation() {
     if (_bootValidated) return;
     _bootValidated = true;
+
+    if (s_updateWaiting) {
+        SOTA_LOG("bootval: an update flashed this boot is waiting for its reboot");
+        return;
+    }
 
     Preferences p;
     if (!p.begin(kNvsNamespace, /*readOnly=*/true)) {
@@ -1300,7 +1331,7 @@ void SimpleOTAClient::processBootValidation() {
     // We're on the new image. Arm the trial.
     _inTrial = true;
     _confirmTimer = xTimerCreate("sota_confirm",
-                                 pdMS_TO_TICKS(_confirmTimeoutSec * 1000UL),
+                                 sotaSecondsToTicks(_confirmTimeoutSec, configTICK_RATE_HZ),
                                  pdFALSE,   // one-shot
                                  this,      // timer ID = instance pointer
                                  &SimpleOTAClient::_confirmTimerCb);

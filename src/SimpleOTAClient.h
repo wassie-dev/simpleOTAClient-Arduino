@@ -77,7 +77,8 @@ enum OTAResult {
     OTA_CHECKSUM_FAIL  = 1,  ///< Downloaded payload did not match expected SHA-256.
     OTA_FLASH_FAIL     = 2,  ///< Network or partition write failure.
     OTA_NO_OFFER       = 3,  ///< apply() called without a successful preceding check().
-    OTA_SIGNATURE_FAIL = 4   ///< Ed25519 signature verification failed; image rejected before it was marked bootable.
+    OTA_SIGNATURE_FAIL = 4,  ///< Ed25519 signature verification failed; image rejected before it was marked bootable.
+    OTA_REBOOT_PENDING = 5   ///< An update is flashed and waits for rebootForUpdate() (setAutoReboot(false)). Nothing was downloaded.
 };
 
 /**
@@ -165,7 +166,9 @@ public:
      *
      * When true (default), apply() calls esp_restart() after a successful flash.
      * When false, apply() returns OTA_SUCCESS and the caller is responsible for
-     * rebooting at a convenient time. The "validated" status event is reported
+     * rebooting at a convenient time. Until that reboot, apply() returns
+     * OTA_REBOOT_PENDING without downloading, because the next update slot
+     * holds the waiting image. The "validated" status event is reported
      * before reboot in either case.
      *
      * @param enabled  true = auto-reboot (default); false = caller-managed reboot.
@@ -176,14 +179,13 @@ public:
      * @brief Emit a "reboot" status event and restart the device.
      *
      * Convenience helper for applications using setAutoReboot(false). Posts
-     * `event="reboot"` to /api/v1/ota/status/ for the just-applied deployment
+     * `event="reboot"` to /api/v1/ota/status/ for the update that is waiting
      * (best-effort; the function does not block on network failure beyond the
      * normal HTTPClient timeout), then calls esp_restart(). Does not return.
      *
-     * Must be called in the post-apply window: between a successful apply()
-     * and the next check(). Outside that window the deployment context has
-     * been cleared and the status POST is skipped, but the device still
-     * reboots.
+     * The event names the waiting update's deployment even after later
+     * check() calls, or after end() and begin(). With no update waiting
+     * nothing is posted; the device reboots either way.
      */
     void rebootForUpdate();
 

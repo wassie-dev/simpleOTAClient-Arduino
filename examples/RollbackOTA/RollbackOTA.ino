@@ -69,12 +69,12 @@ void loop() {
     // is a no-op when no trial is in progress, so calling it on a normal boot
     // is harmless. ota.isTrialInstall() lets you skip the work entirely when
     // there's nothing to confirm.
-    // if (!confirmed && ota.isTrialInstall() && applicationHealthy()) {
-    //     if (ota.confirmRunning()) {
-    //         Serial.println("[app] trial confirmed");
-    //     }
-    //     confirmed = true;
-    // }
+    if (!confirmed && ota.isTrialInstall() && applicationHealthy()) {
+        if (ota.confirmRunning()) {
+            Serial.println("[app] trial confirmed");
+        }
+        confirmed = true;
+    }
 
     delay(1000);
 }

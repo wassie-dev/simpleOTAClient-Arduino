@@ -393,7 +393,7 @@ Starts a FreeRTOS background task (stack: 8 KB, priority: 1) that runs the follo
 
 1. **If `initialDelayMs` > 0**, sleep for that many milliseconds (one-shot, at task start only). Use this to stagger the first HTTPS request relative to other TLS sessions starting concurrently at boot (e.g. MQTT). Default: `0`.
 2. If `isConnected` was supplied, wait until it returns `true` (polled every second). Otherwise skip this step.
-3. **If a trial install is in progress**, run a short-retry inner loop: retry `/check/` every `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` seconds (default 10 s) until the server responds with 2xx or the confirm timeout expires. With `setManagedAutoConfirm(true)` (default), call `confirmRunning()` on the first 2xx and continue; the `confirmed` event fires on that same `/check/` response. Skip this step on a normal (non-trial) boot.
+3. **If a trial install is in progress**, run a short-retry inner loop: retry `/check/` every `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` seconds (default 10 s) until the server responds with 2xx or the confirm timeout expires. With `setManagedAutoConfirm(true)` (default), call `confirmRunning()` on the first 2xx, send the `confirmed` event straight away, and `apply()` an update that check offered; that check counts as this cycle's, so the loop goes on to step 6. Skip this step on a normal (non-trial) boot.
 4. Call `check()`. If an update is available, call `apply()`.
 5. If `onResult` is set and `apply()` returned without rebooting, invoke it with the `OTAResult`.
 6. Sleep for `checkIntervalSec` seconds, then repeat.
@@ -443,7 +443,7 @@ On failure at any stage, a `failed` event is reported with a short reason token 
 | `checksum_mismatch` | SHA-256 of received bytes did not match server's value |
 | `update_end_failed` | `Update.end()` failed after streaming completed |
 
-If [rollback](#rollback) is enabled and a trial install is not confirmed within the timeout, the library reboots into the previous partition and — once the next `check()` succeeds — sends a separate `rolled_back` event with reason `confirm_timeout`.
+If [rollback](#rollback) is enabled and a trial install is not confirmed within the timeout, the library reboots into the previous partition and queues a separate `rolled_back` event with reason `confirm_timeout`, sent by the next `check()`.
 
 ---
 
@@ -539,7 +539,7 @@ Ed25519 verification uses a vendored, unmodified copy of [Monocypher](https://mo
 
 ## Rollback
 
-Since v0.2.0 the library supports a **library-managed trial install with timeout-based rollback**. When `apply()` succeeds, the library snapshots the outgoing image's partition address and NVS metadata, then reboots into the new firmware. The new boot enters a "trial" state: if the application calls `confirmRunning()` before `SIMPLEOTA_CONFIRM_TIMEOUT_S` (default 300 s), the trial is sealed and the snapshot is discarded. Otherwise the library restores the previous partition and reboots back into it.
+The library supports a **library-managed trial install with timeout-based rollback**. Before `apply()` switches the boot slot to the new image, it saves a trial record: the outgoing image's partition address and NVS metadata. A power cut at any point therefore leaves either the old image running or the new image on trial, never the new image unsupervised. Then it reboots into the new firmware. The new boot enters a "trial" state: if the application calls `confirmRunning()` before `SIMPLEOTA_CONFIRM_TIMEOUT_S` (default 300 s), the trial is sealed and the snapshot is discarded. Otherwise the library restores the previous partition and reboots back into it.
 
 Stock Arduino-ESP32 builds do not have the IDF bootloader's pending-verify feature enabled, so this is implemented entirely in firmware rather than via `esp_ota_mark_app_valid_cancel_rollback()`. A consequence: a hard hang **before** the library's confirm-machinery runs (e.g. inside a global object constructor, or in `setup()` before `confirmRunning()` is reached) is still caught by the timeout, but a hang in the C runtime or bootloader is not. See [Limitations](#limitations).
 
@@ -583,9 +583,9 @@ The default 300 s timeout assumes Wi-Fi. For cellular or other transports where 
 
 ### Server interaction
 
-When the library rolls back, the previous boot's snapshot is restored to the partition and to NVS (build number, hash, version label). On the *next* boot, after `check()` makes its first successful round-trip, the library sends a `rolled_back` status event with the failed deployment's `deployment_id` and `build_number` and a reason of `confirm_timeout`. The event is retried on every subsequent `check()` until the server accepts it.
+When the library rolls back, the previous boot's snapshot is restored to the partition and to NVS (build number, hash, version label), and a `rolled_back` status event with the failed deployment's `deployment_id` and `build_number` and a reason of `confirm_timeout` is queued. On a successful trial (`confirmRunning()` ran), a `confirmed` event is queued.
 
-On a successful trial (device boots new image, `confirmRunning()` executes), the library queues a `confirmed` status event. It is sent on the first 2xx from `/check/` after `confirmRunning()` has run and is retried on every subsequent `check()` until the server accepts it. Both `confirmed` and `rolled_back` are persisted in NVS so they survive a power-cycle between the confirm/rollback event and the next network round-trip.
+Queued events are kept in NVS, at most two, oldest dropped first, and sent at the start of each `check()`. An event counts as delivered as soon as the server returns any HTTP response; the library does not act on what the response says. An event that gets no response stays queued for the next `check()`. Queued events never hold up an update.
 
 ### Disabling rollback
 

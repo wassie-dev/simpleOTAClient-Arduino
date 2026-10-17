@@ -90,8 +90,8 @@ enum OTAResult {
  * @brief Over-the-air firmware update client for ESP32.
  *
  * Provides check/apply firmware update mechanics, optional lifecycle event
- * reporting, a trial-install/rollback subsystem (v0.2.0), and on-device
- * Ed25519 firmware signature verification for signed artifacts (v0.4.0).
+ * reporting, a trial-install/rollback subsystem, and on-device Ed25519
+ * firmware signature verification for signed artifacts.
  */
 class SimpleOTAClient {
 public:
@@ -319,23 +319,25 @@ public:
     const char* lastOfferedVersion() const;
 
     // ------------------------------------------------------------------
-    // Trial-install / rollback API (v0.2.0)
+    // Trial-install / rollback API
     //
     // After a successful apply() that reboots into a new image, the device
     // enters a "trial" state. The new firmware must call confirmRunning()
     // within setConfirmTimeout() seconds, or the library reboots into the
-    // previous partition and reports a "rolled_back" event to the server on
-    // the next successful network round-trip.
+    // previous partition and queues a "rolled_back" report, sent at the start
+    // of the next check().
     //
     // In managed mode (begin()), the library auto-calls confirmRunning() on
-    // the first HTTP 2xx from /check/ unless setManagedAutoConfirm(false)
+    // the first HTTP 200 from /check/ unless setManagedAutoConfirm(false)
     // was called. In polling mode (manual check()/apply()), the application
     // is responsible for calling confirmRunning() once it determines the new
     // image is healthy.
     //
-    // Limitation: an image that crashes before the library's boot-validation
-    // code runs (e.g. in a global constructor or during Serial bring-up) will
-    // reboot-loop into the bad image. See README for details.
+    // A crash or reset before confirmRunning(), even in a global constructor,
+    // makes the bootloader return to the previous partition, and a hang from
+    // setup() onwards is reset by the chip watchdog. Building with
+    // SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK leaves only the confirm timer.
+    // See the README's Rollback and Limitations sections.
     // ------------------------------------------------------------------
 
     /**
@@ -358,7 +360,7 @@ public:
      * Managed mode only. Default: true.
      *
      * When true, the managed task auto-calls confirmRunning() on the first HTTP
-     * 2xx from /check/ during a TRIAL boot. When false, the application must call
+     * 200 from /check/ during a TRIAL boot. When false, the application must call
      * confirmRunning() itself (e.g. from the onResult callback or after its own
      * health checks complete).
      *

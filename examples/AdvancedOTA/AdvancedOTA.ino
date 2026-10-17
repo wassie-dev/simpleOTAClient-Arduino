@@ -122,6 +122,10 @@ void setup() {
             case OTA_SIGNATURE_FAIL:
                 Serial.println("[app] signature rejected");
                 break;
+            case OTA_UNCONFIRMED:
+                // This firmware is still on trial: confirm it first.
+                Serial.println("[app] confirm the running firmware before updating");
+                break;
             case OTA_REBOOT_PENDING:
                 // An earlier apply() flashed an update that waits for
                 // rebootForUpdate().

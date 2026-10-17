@@ -72,3 +72,41 @@ jobs:
         with:
           name: sketches-reports
           path: sketches-reports
+
+  rollback-hook:
+    name: Rollback hook (core ${{ matrix.core }}, ${{ matrix.flags || 'default' }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        core: ["2.0.17", "3.3.0"]
+        flags: ["", "-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Compile BasicOTA and check verifyRollbackLater
+        run: |
+          set -euo pipefail
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls \
+            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@${{ matrix.core }}
+          arduino-cli compile --fqbn esp32:esp32:esp32 --library "$PWD" \
+            --warnings all --build-path "$PWD/build" \
+            --build-property "compiler.cpp.extra_flags=${{ matrix.flags }}" \
+            --build-property "compiler.c.extra_flags=${{ matrix.flags }}" \
+            examples/BasicOTA
+          nm_bin=$(find "$HOME/.arduino15/packages/esp32/tools" -name 'xtensa-esp*-elf-nm' | head -1)
+          if [ -z "${{ matrix.flags }}" ]; then
+            "$nm_bin" build/BasicOTA.ino.elf | grep -E ' T verifyRollbackLater$'
+            "$nm_bin" build/libraries/*/SimpleOTAClient.cpp.o | grep -E ' T verifyRollbackLater$'
+          else
+            if "$nm_bin" build/libraries/*/SimpleOTAClient.cpp.o | grep -q verifyRollbackLater; then
+              echo "verifyRollbackLater is defined despite the opt-out" >&2
+              exit 1
+            fi
+          fi

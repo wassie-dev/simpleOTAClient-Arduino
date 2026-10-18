@@ -102,7 +102,7 @@ lib_deps =
 
 Call `begin()` from `setup()`. The library starts a FreeRTOS background task that checks for an update on a fixed interval, flashes it, and then sleeps before repeating. Your application loop is untouched.
 
-The library is **transport-agnostic**: it does not manage Wi-Fi, Ethernet, or PPP. Bring up your network however you like, then start the OTA task.
+The library is **transport-agnostic**: it does not manage Wi-Fi, Ethernet, or PPP. Bring up your network however you like, and give `begin()` an `isConnected` probe so the task waits for it.
 
 ```cpp
 #include <WiFi.h>
@@ -110,11 +110,13 @@ The library is **transport-agnostic**: it does not manage Wi-Fi, Ethernet, or PP
 
 SimpleOTAClient ota("soto_proj_xxxx", SimpleOTAClient::CHIP_ESP32);
 
+static bool wifiUp() { return WiFi.status() == WL_CONNECTED; }
+
 void setup() {
     Serial.begin(115200);
     WiFi.mode(WIFI_STA);
     WiFi.begin("ssid", "password");
-    ota.begin();   // check every hour, auto-reboot on success
+    ota.begin(3600, nullptr, wifiUp);   // check every hour once Wi-Fi is up
 }
 
 void loop() {
@@ -122,16 +124,9 @@ void loop() {
 }
 ```
 
-If you can cheaply tell whether IP is up (faster startup, fewer wasted requests on a flaky link), pass an `isConnected` probe. The task polls it once a second and only attempts a check while it returns `true`:
+The task polls `isConnected` once a second and only attempts a check while it returns `true`. Without a probe, the task checks as soon as it starts, whether or not the link is up. On a normal boot, a check that fails because the link is not up yet returns `false`, and the next attempt waits the full `checkIntervalSec`; a sketch that calls `begin()` with no probe straight after `WiFi.begin()` usually does not check in until an hour after boot.
 
-```cpp
-ota.begin(
-    /*checkIntervalSec*/ 3600,
-    /*onResult*/         nullptr,
-    /*isConnected*/      []() { return WiFi.status() == WL_CONNECTED; });
-```
-
-For Ethernet, cellular, or any other stack, supply the equivalent probe (`ETH.linkUp()`, your modem's `isConnected()`, etc.). Without a probe, the task simply attempts each check on schedule; transport failures return `false` and the next interval handles retry.
+For Ethernet, cellular, or any other stack, supply the equivalent probe (`ETH.linkUp()`, your modem's `isConnected()`, etc.).
 
 To be notified of errors (with the default `setAutoReboot(true)`, successful updates reboot before the callback fires):
 
@@ -139,7 +134,7 @@ To be notified of errors (with the default `setAutoReboot(true)`, successful upd
 ota.begin(3600, [](OTAResult r) {
     if (r != OTA_SUCCESS)
         Serial.printf("OTA failed: %d\n", r);
-});
+}, wifiUp);
 ```
 
 ### Polling mode
@@ -402,7 +397,7 @@ Starts a FreeRTOS background task (stack: 8 KB, priority: 1) that runs the follo
 5. If `onResult` is set and `apply()` returned without rebooting, invoke it with the `OTAResult`.
 6. Sleep for `checkIntervalSec` seconds, then repeat.
 
-The library is transport-agnostic and does not import any networking stack. The application is responsible for bringing up Wi-Fi, Ethernet, PPP, or whatever connectivity it uses. The `isConnected` callback is purely an optimisation; without it, transport failures simply return `false` from `check()` and are retried on the next interval.
+The library is transport-agnostic and does not import any networking stack. The application is responsible for bringing up Wi-Fi, Ethernet, PPP, or whatever connectivity it uses. Pass `isConnected` whenever connectivity may not be up when `begin()` runs, such as straight after `WiFi.begin()`. Without it, the first check runs without waiting for the link, a transport failure returns `false` from `check()`, and the retry waits for the next interval, `checkIntervalSec` later.
 
 Safe to call once from `setup()`. Calling `begin()` while a task is already running is a no-op.
 

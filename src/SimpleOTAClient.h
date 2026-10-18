@@ -441,6 +441,9 @@ public:
      *                          only attempts a check when it returns true. If nullptr
      *                          (default), the task always attempts a check; transport
      *                          failures are absorbed by the normal retry paths.
+     *                          Pass it when connectivity may not be up yet (e.g.
+     *                          right after WiFi.begin()): otherwise a first check
+     *                          that fails waits a full checkIntervalSec to retry.
      * @param initialDelayMs    Milliseconds to wait inside the task before the first
      *                          check(). Use this to avoid lwIP contention when other
      *                          TLS sessions (e.g. MQTT) are starting concurrently at

@@ -39,6 +39,7 @@ Signing here protects the delivery path. It is not Secure Boot. They stack if yo
 - [Configuration](#configuration)
 - [Logging](#logging)
 - [Partition table](#partition-table)
+- [Footprint](#footprint)
 - [Limitations](#limitations)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -661,12 +662,45 @@ The insecure-TLS warning is always emitted on `Serial`, regardless of this setti
 
 ## Partition table
 
-The device must be flashed with a partition table that includes at least two OTA application partitions. The Arduino IDE's built-in options that work:
+The device must be flashed with a partition table that has two OTA app partitions: the running firmware sits in one, and an update is written to the other. Choose the scheme in the Arduino IDE under *Tools → Partition Scheme*, or in `platformio.ini` with `board_build.partitions`. The schemes in Arduino-ESP32 3.3 that work, with the app size each slot holds (which ones the menu offers depends on the board):
 
-- *Default 4MB with spiffs*
-- *Minimal SPIFFS (Large APPS with OTA)*
+| Scheme | `board_build.partitions` | Flash | App slot |
+| --- | --- | --- | --- |
+| *Default 4MB with spiffs* | `default.csv` | 4 MB | 1280 KB |
+| *Default 4MB with ffat* | `default_ffat.csv` | 4 MB | 1280 KB |
+| *Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)* | `min_spiffs.csv` | 4 MB | 1920 KB |
+| *No FS 4MB (2MB APP x2)* | `no_fs.csv` | 4 MB | 1984 KB |
+| *8M with spiffs (3MB APP/1.5MB SPIFFS)* | `default_8MB.csv` | 8 MB | 3264 KB |
+| *16M Flash (3MB APP/9.9MB FATFS)* | `app3M_fat9M_16MB.csv` | 16 MB | 3072 KB |
 
-If `Update.begin()` fails at runtime, this is the most likely cause. Verify your partition table in the Arduino IDE under *Tools → Partition Scheme*, or in your `platformio.ini` with `board_build.partitions`.
+Schemes with a single app partition, such as *Huge APP*, the *No OTA* schemes and *Minimal (1.3MB APP/700KB SPIFFS)*, cannot install an update: `apply()` fails with `update_begin_failed` and the running firmware is left as it is.
+
+The firmware you upload to SimpleOTA must fit the app slot of the devices it is offered to. An image larger than the slot is refused and the device stays on its build: the update fails with `update_begin_failed`, or with `update_write_failed` when the image size is not known in advance. Only the inactive slot is ever written.
+
+### Changing the scheme
+
+A device keeps the partition table it was flashed with; the table cannot change over OTA. A new scheme reaches a device only through a USB upload.
+
+- When the board's current firmware uses a different scheme, set *Tools → Erase All Flash Before Sketch Upload* to *Enabled* for that upload (with PlatformIO, run `pio run -t erase` first). An upload writes the bootloader, the partition table, the OTA boot data and the sketch, and leaves the rest of the flash as it is. Without the erase, the new NVS partition starts with whatever the old layout left there, including the build number the library stored, so the device goes on reporting that build while it runs the sketch you uploaded. After the erase it reports build 0 until its first update.
+- When a fleet has devices with different schemes, call `setPartitionProfile()` on each device to name its scheme, and give each upload the profile it was built for. The server offers an upload only to devices that report the same profile. An upload without a profile is offered to every device, and so is any upload to a device that reports none.
+
+---
+
+## Footprint
+
+Measured with Arduino-ESP32 3.3.12, comparing a sketch that runs SimpleOTA in managed mode with signed firmware against the same sketch without it:
+
+| Target | Added to a sketch that already uses HTTPS, `Preferences` and `Update` | Added to a Wi-Fi-only sketch | Free in a 1280 KB slot (*Default 4MB with spiffs*) |
+| --- | --- | --- | --- |
+| ESP32 | 42 KB flash, 0.7 KB RAM | 184 KB flash, 4.0 KB RAM | 240 KB (19%) |
+| ESP32-S3 | 42 KB flash, 0.7 KB RAM | 203 KB flash, 3.0 KB RAM | 257 KB (20%) |
+| ESP32-C6 | 44 KB flash, 0.7 KB RAM | 209 KB flash, 3.6 KB RAM | 137 KB (11%) |
+
+RAM is static RAM, as the Arduino build reports it under *Global variables*. The free space is what the test sketch leaves in the slot; a larger application leaves less. *Minimal SPIFFS* gives it 640 KB more, and *No FS 4MB* 704 KB more.
+
+The library's own code is about 37 KB of that flash: about 23 KB for the client and 13 KB for the bundled Ed25519 verifier (Monocypher). Most of the flash added to a Wi-Fi-only sketch is the HTTPS stack (mbedTLS, `HTTPClient` and `NetworkClientSecure`), which a sketch that already makes HTTPS requests has anyway.
+
+At run time, `begin()` starts a task with an 8 KB stack, and a download uses a 1 KB buffer on the stack of the task running `apply()`. Each request holds a TLS session on the heap while it runs.
 
 ---
 

@@ -674,13 +674,13 @@ For mixed schemes in one fleet, use [`setPartitionProfile()`](#void-setpartition
 
 ## Footprint
 
-The figures below are for Arduino-ESP32 3.3.12 in managed mode with signed firmware, compared to a baseline sketch that already uses `NetworkClientSecure`, `HTTPClient` GET, `Preferences`, and `Update.begin`.
+The figures below come from building examples/SignedOTA with arduino-cli 1.5.1 and esp32:esp32@3.3.12 on the Default 4MB scheme (1280 KB slot), compared to a baseline sketch that already uses `NetworkClientSecure`, `HTTPClient` GET, `Preferences`, and `Update.begin`.
 
 | Target | Over HTTPS baseline | Over Wi-Fi only | Free in 1280 KB slot (*Default 4MB with spiffs*) |
 | --- | --- | --- | --- |
-| ESP32 | +45 KB flash, +0.7 KB RAM | +184 KB flash, +4.0 KB RAM | 254 KB (20%) |
-| ESP32-S3 | +45 KB flash, +0.7 KB RAM | +203 KB flash, +3.0 KB RAM | 270 KB (21%) |
-| ESP32-C6 | +48 KB flash, +0.7 KB RAM | +208 KB flash, +3.6 KB RAM | 152 KB (12%) |
+| ESP32 | +46 KB flash, +0.7 KB RAM | +184 KB flash, +4.0 KB RAM | 241 KB (19%) |
+| ESP32-S3 | +45 KB flash, +0.7 KB RAM | +203 KB flash, +3.0 KB RAM | 257 KB (20%) |
+| ESP32-C6 | +48 KB flash, +0.7 KB RAM | +209 KB flash, +3.6 KB RAM | 137 KB (11%) |
 
 ---
 

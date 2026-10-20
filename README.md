@@ -281,7 +281,7 @@ The event names the waiting update's deployment even after later `check()` calls
 
 ### `void setPartitionProfile(const char* profile)`
 
-Reports the device's partition layout to the server (e.g. `"default_4mb"`, `"minimal_spiffs_4mb"`). Required when your SimpleOTA artifacts are tagged with a `partition_profile`; the server uses this field to filter hardware-compatible builds and will not offer a build whose partition profile doesn't match. Pass `nullptr` (default) to omit the field.
+Reports the device's partition layout to the server (e.g. `"default_4mb"`, `"minimal_spiffs_4mb"`). A blank `partition_profile` on either side matches any value. Pass `nullptr` (default) to omit the field.
 
 The value should match the scheme you selected in the Arduino IDE under *Tools → Partition Scheme*, or the `board_build.partitions` value in your `platformio.ini`.
 
@@ -662,11 +662,11 @@ The insecure-TLS warning is always emitted on `Serial`, regardless of this setti
 
 ## Partition table
 
-A scheme works for SimpleOTA when its CSV defines both `ota_0` and `ota_1` (see `tools/partitions/` in [Arduino-ESP32 3.3.12](https://github.com/espressif/arduino-esp32/tree/3.3.12/tools/partitions)). Pick *Tools → Partition Scheme* or set `board_build.partitions`. On 4 MB boards, common choices include *Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS)* (`default.csv`, 1280 KB per slot), *Default 4MB with ffat (1.2MB APP/1.5MB FATFS)* (`default_ffat.csv`, 1280 KB), and *Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)* (`min_spiffs.csv`, 1920 KB; some boards label this *Minimal SPIFFS (Large APPS with OTA)*). *Huge APP*, the *No OTA* entries and *Minimal (1.3MB APP/700KB SPIFFS)* have only one app slot, so `apply()` fails with `update_begin_failed`.
+A scheme works for SimpleOTA when its CSV defines both `ota_0` and `ota_1` (see `tools/partitions/` in [Arduino-ESP32 3.3.12](https://github.com/espressif/arduino-esp32/tree/3.3.12/tools/partitions)). Choose the Partition Scheme entry in the Tools menu, or set `board_build.partitions`. On 4 MB boards, common choices include *Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS)* (`default.csv`, 1280 KB per slot), *Default 4MB with ffat (1.2MB APP/1.5MB FATFS)* (`default_ffat.csv`, 1280 KB), and *Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)* (`min_spiffs.csv`, 1920 KB; some boards label this *Minimal SPIFFS (Large APPS with OTA)*). *Huge APP*, *Minimal (1.3MB APP/700KB SPIFFS)* and the plain *No OTA* entries have one app slot, so `Update.begin()` fails and `apply()` reports `update_begin_failed`.
 
 ### Changing the scheme
 
-The partition table is replaced only on a full serial USB flash (bootloader and table via esptool), not on OTA or a normal sketch upload. If you are moving off a single-slot scheme, enable *Erase All Flash Before Sketch Upload* for that USB flash (PlatformIO: `pio run -t erase` first) so NVS and stored build numbers reset cleanly. Boards already on a two-slot layout do not need a full erase just to upload a new sketch.
+A normal Arduino IDE or arduino-cli USB sketch upload uses esptool to write the bootloader, `partitions.bin` at `0x8000`, `boot_app0.bin` at `0xe000`, and the app, so the selected partition scheme is applied. Network OTA, including a SimpleOTA update, writes only the app image, so the scheme cannot be changed over the air. If you are moving off a single-slot scheme, enable *Erase All Flash Before Sketch Upload* for that USB flash (PlatformIO: `pio run -t erase` first) so NVS and stored build numbers reset cleanly. Boards already on a two-slot layout do not need a full erase just to upload a new sketch.
 
 For mixed schemes in one fleet, use [`setPartitionProfile()`](#void-setpartitionprofileconst-char-profile) with matching artifact profiles. A blank `partition_profile` on the artifact or on the device matches any value for that field only; `chip_family`, `board_id`, `framework` and `hardware_revision` still filter offers.
 
@@ -674,13 +674,13 @@ For mixed schemes in one fleet, use [`setPartitionProfile()`](#void-setpartition
 
 ## Footprint
 
-Arduino-ESP32 3.3.12: managed mode with signed firmware, compared to a baseline sketch that already uses `NetworkClientSecure`, `HTTPClient` GET, `Preferences`, and `Update.begin`:
+The figures below are for Arduino-ESP32 3.3.12 in managed mode with signed firmware, compared to a baseline sketch that already uses `NetworkClientSecure`, `HTTPClient` GET, `Preferences`, and `Update.begin`.
 
 | Target | Over HTTPS baseline | Over Wi-Fi only | Free in 1280 KB slot (*Default 4MB with spiffs*) |
 | --- | --- | --- | --- |
-| ESP32 | +45 KB flash, +0.7 KB RAM | +184 KB flash, +4.0 KB RAM | 254 KB (19%) |
+| ESP32 | +45 KB flash, +0.7 KB RAM | +184 KB flash, +4.0 KB RAM | 254 KB (20%) |
 | ESP32-S3 | +45 KB flash, +0.7 KB RAM | +203 KB flash, +3.0 KB RAM | 270 KB (21%) |
-| ESP32-C6 | +48 KB flash, +0.7 KB RAM | +209 KB flash, +3.6 KB RAM | 153 KB (12%) |
+| ESP32-C6 | +48 KB flash, +0.7 KB RAM | +208 KB flash, +3.6 KB RAM | 152 KB (12%) |
 
 ---
 

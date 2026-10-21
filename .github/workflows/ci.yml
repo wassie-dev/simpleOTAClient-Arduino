@@ -57,6 +57,9 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror -Isrc -o test_url test/native/test_url.cpp
           ./test_url
 
+      - name: Check apply() does not build the download URL
+        run: python3 test/native/check_apply_download_url.py
+
   compile:
     name: Compile examples (ESP32)
     runs-on: ubuntu-latest

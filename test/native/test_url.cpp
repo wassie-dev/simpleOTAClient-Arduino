@@ -132,6 +132,22 @@ int main(void)
     ACCEPT("https://example.com/a+b");
     ACCEPT("https://xn--e1afmkfd.example");
 
+    CHECK(sotaBuildApiUrl("HTTPS://SimpleOTA.COM/ota/", "/api/v1/ota/check/",
+                          out, sizeof(out)),
+          "build mixed-case scheme");
+    CHECK(strcmp(out, "https://SimpleOTA.COM/ota/api/v1/ota/check/") == 0,
+          "scheme is written lowercase, host case kept");
+    {
+        const char* upper = "HTTPS://staging.example.com";
+        st = SOTA_URL_MALFORMED;
+        CHECK(sotaSelectServerUrl(kSotaDefaultServerUrl, upper, &st) == upper,
+              "uppercase https stores the caller pointer");
+        CHECK(st == SOTA_URL_OK, "uppercase https status");
+    }
+    CHECK(!sotaBuildApiUrl("HTTP://ota.example.com", "/api/v1/ota/check/",
+                           out, sizeof(out)),
+          "build refuses uppercase http");
+
     CHECK(sotaBuildApiUrl("https://ota.example.com/", "/api/v1/ota/status/",
                           out, sizeof(out)),
           "build trailing slash");
@@ -176,8 +192,9 @@ int main(void)
     REJECT("HTTP://simpleota.com", SOTA_URL_NOT_HTTPS);
     REJECT("HtTp://127.0.0.1:8080", SOTA_URL_NOT_HTTPS);
     REJECT("http://localhost/ota", SOTA_URL_NOT_HTTPS);
-    REJECT("HTTPS://simpleota.com", SOTA_URL_MALFORMED);
-    REJECT("https://simpleota.com", SOTA_URL_OK);
+    ACCEPT("HTTPS://simpleota.com");
+    ACCEPT("Https://ota.example.com:8443");
+    ACCEPT("HtTpS://localhost/ota/");
     REJECT("ftp://simpleota.com", SOTA_URL_MALFORMED);
     REJECT("https://", SOTA_URL_MALFORMED);
     REJECT("https:///", SOTA_URL_MALFORMED);

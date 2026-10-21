@@ -52,6 +52,14 @@ static inline bool sotaEqIgnoreCase(const char* s, size_t n, const char* lit)
     return i == n;
 }
 
+/** True when url begins with https://, in any case. */
+static inline bool sotaStartsWithHttps(const char* url)
+{
+    if (!url || strlen(url) < 8u) return false;
+    return sotaEqIgnoreCase(url, 5, "https") &&
+           url[5] == ':' && url[6] == '/' && url[7] == '/';
+}
+
 /** A numeric host must be a dotted IPv4 address. Leading zeros are rejected. */
 static inline bool sotaIpv4Ok(const char* s, const char* end)
 {
@@ -226,13 +234,15 @@ static inline SotaUrlStatus sotaValidateServerUrl(const char* url)
     const size_t len = strlen(url);
     if (len > kSotaServerUrlMaxLen) return SOTA_URL_MALFORMED;
 
-    const char* sep = strstr(url, "://");
-    if (!sep) return SOTA_URL_MALFORMED;
-    const size_t schemeLen = (size_t)(sep - url);
-    if (sotaEqIgnoreCase(url, schemeLen, "http")) return SOTA_URL_NOT_HTTPS;
-    if (schemeLen != 5u || memcmp(url, "https", 5) != 0) return SOTA_URL_MALFORMED;
-
-    const char* p = sep + 3;
+    const char* p;
+    if (sotaStartsWithHttps(url)) {
+        p = url + 8;
+    } else {
+        const char* sep = strstr(url, "://");
+        const size_t schemeLen = sep ? (size_t)(sep - url) : 0;
+        if (sep && sotaEqIgnoreCase(url, schemeLen, "http")) return SOTA_URL_NOT_HTTPS;
+        return SOTA_URL_MALFORMED;
+    }
     const char* end = url + len;
     if (p >= end) return SOTA_URL_MALFORMED;
 
@@ -295,7 +305,7 @@ static inline bool sotaBuildApiUrl(const char* base, const char* path,
                                    char* out, size_t outLen)
 {
     if (!base || !path || path[0] != '/' || !out || outLen == 0) return false;
-    if (strncmp(base, "https://", 8) != 0) return false;
+    if (!sotaStartsWithHttps(base)) return false;
     if (sotaValidateServerUrl(base) != SOTA_URL_OK) return false;
     size_t blen = strlen(base);
     while (blen > 8u && base[blen - 1] == '/') --blen;
@@ -303,6 +313,7 @@ static inline bool sotaBuildApiUrl(const char* base, const char* path,
     if (blen > outLen - 1u) return false;
     if (plen > (outLen - 1u) - blen) return false;
     memcpy(out, base, blen);
+    memcpy(out, "https://", 8);
     memcpy(out + blen, path, plen + 1u);
     return true;
 }

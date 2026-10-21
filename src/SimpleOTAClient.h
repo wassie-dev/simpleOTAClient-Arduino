@@ -168,21 +168,15 @@ public:
     /**
      * @brief Point check() and status posts at another SimpleOTA server.
      *
-     * The config owner calls this before begin(), and before check() in
-     * polling mode. Do not call it while a check or status post may be
-     * running: managed mode reads the pointer with no lock.
+     * Call before begin(), and before check() in polling mode. Not while a
+     * check or status post may be running: managed mode reads the pointer
+     * with no lock. The pointer is stored, not copied, and must outlive
+     * this object. Until a URL is accepted the base is https://simpleota.com.
      *
-     * Downloads keep using the pre-signed URL from the server. Until a URL
-     * is accepted, the base is https://simpleota.com.
-     *
-     * https is accepted in any case. http and malformed values are
-     * rejected: this returns false, prints a [SimpleOTAClient] line naming
-     * not_https or malformed, and leaves the previous URL in place. TLS
-     * verification is unchanged. A server that does not chain to
-     * kSimpleOtaRootCA needs setCACert().
-     *
-     * The pointer is stored, not copied. It must outlive this object
-     * (static const char kOtaBase[] = "https://ota.example.com").
+     * https is accepted in any case. http and any other value return false,
+     * print a [SimpleOTAClient] line (not_https or malformed), and leave the
+     * previous URL in place. Downloads still use the pre-signed URL. TLS
+     * verification is unchanged; use setCACert() for a different CA.
      *
      * @param url  Server base.
      * @return true when the URL is accepted.

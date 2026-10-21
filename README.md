@@ -262,16 +262,14 @@ Overrides the CA certificate used for HTTPS verification. By default the library
 
 ### `bool setServerUrl(const char* url)`
 
-Points `check()` and status posts at a self-hosted, staging, or local SimpleOTA server. The config owner calls it before `begin()`, and before `check()` in polling mode. Do not call it while a check or status post may be running: managed mode reads the pointer with no lock. Until a URL is accepted, the client uses `https://simpleota.com`.
-
-The pointer is stored, not copied. Pass a string that outlives the client:
+Points `check()` and status posts at another SimpleOTA server. Call it before `begin()`, and before `check()` in polling mode, not while a check or status post may be running. The pointer is stored and must outlive the client. Until a URL is accepted, the base is `https://simpleota.com`.
 
 ```cpp
 static const char kOtaBase[] = "https://ota.example.com";
 ota.setServerUrl(kOtaBase);
 ```
 
-`https` is accepted in any case. `http` and malformed values return `false`, print a `[SimpleOTAClient]` line (`not_https` or `malformed`), and leave the current URL unchanged. TLS verification is not changed: call `setCACert()` when the server does not chain to the bundled root. Downloads still use the pre-signed URL from the server.
+`https` is accepted in any case. `http` and any other value return `false`, print a `[SimpleOTAClient]` line (`not_https` or `malformed`), and leave the previous URL in place. Downloads still use the pre-signed URL. TLS verification is unchanged; use `setCACert()` for a different CA.
 
 ---
 

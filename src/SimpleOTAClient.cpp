@@ -404,7 +404,7 @@ bool SimpleOTAClient::setServerUrl(const char* url) {
     if (status != SOTA_URL_OK) {
         Serial.printf("[SimpleOTAClient] setServerUrl rejected (%s). Keeping %s\n",
                       sotaUrlStatusName(status),
-                      sotaEffectiveServerUrl(_serverUrl));
+                      _serverUrl);
         return false;
     }
     _serverUrl = selected;
@@ -649,8 +649,7 @@ int SimpleOTAClient::postJson(const char* path, const String& body, String* outR
     }
     warnInsecureOnce();
     char joined[kSotaServerUrlMaxLen + 32];
-    if (!sotaBuildApiUrl(sotaEffectiveServerUrl(_serverUrl), path,
-                         joined, sizeof(joined))) {
+    if (!sotaBuildApiUrl(_serverUrl, path, joined, sizeof(joined))) {
         SOTA_LOG("postJson: refusing server url");
         return -1;
     }

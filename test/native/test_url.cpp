@@ -21,12 +21,10 @@ static int g_failures = 0;
         }                                                        \
     } while (0)
 
-struct UrlCase {
-    const char* input;
-    SotaUrlStatus expected;
-};
-
-static const UrlCase kUrlCases[] = {
+static const struct {
+    const char* in;
+    SotaUrlStatus want;
+} kUrl[] = {
     {"https://simpleota.com", SOTA_URL_OK},
     {"https://simpleota.com/", SOTA_URL_OK},
     {"https://simpleota.com/ota/", SOTA_URL_OK},
@@ -109,17 +107,14 @@ static const UrlCase kUrlCases[] = {
     {" https://example.com", SOTA_URL_MALFORMED},
 };
 
-static void fillLabel(char* dest, size_t n, char c)
-{
-    size_t i;
-    for (i = 0; i < n; ++i) dest[i] = c;
-    dest[n] = '\0';
-}
-
 int main(void)
 {
     char out[320];
     SotaUrlStatus st;
+    size_t i;
+
+    for (i = 0; i < sizeof(kUrl) / sizeof(kUrl[0]); ++i)
+        CHECK(sotaValidateServerUrl(kUrl[i].in) == kUrl[i].want, kUrl[i].in);
 
     CHECK(strcmp(kSotaDefaultServerUrl, "https://simpleota.com") == 0,
           "default host is https://simpleota.com");
@@ -129,16 +124,13 @@ int main(void)
           "unset base is the default");
     CHECK(sotaEffectiveServerUrl(kSotaDefaultServerUrl) == kSotaDefaultServerUrl,
           "explicit default pointer is kept");
-
     CHECK(sotaBuildApiUrl(sotaEffectiveServerUrl(NULL), "/api/v1/ota/check/",
-                          out, sizeof(out)),
-          "build default check");
-    CHECK(strcmp(out, "https://simpleota.com/api/v1/ota/check/") == 0,
+                          out, sizeof(out)) &&
+              strcmp(out, "https://simpleota.com/api/v1/ota/check/") == 0,
           "default check url");
     CHECK(sotaBuildApiUrl(sotaEffectiveServerUrl(NULL), "/api/v1/ota/status/",
-                          out, sizeof(out)),
-          "build default status");
-    CHECK(strcmp(out, "https://simpleota.com/api/v1/ota/status/") == 0,
+                          out, sizeof(out)) &&
+              strcmp(out, "https://simpleota.com/api/v1/ota/status/") == 0,
           "default status url");
 
     st = SOTA_URL_OK;
@@ -146,12 +138,10 @@ int main(void)
               kSotaDefaultServerUrl,
           "http does not replace the default");
     CHECK(st == SOTA_URL_NOT_HTTPS, "http status is not_https");
-    CHECK(sotaBuildApiUrl(sotaEffectiveServerUrl(
-                              sotaSelectServerUrl(kSotaDefaultServerUrl,
-                                                  "http://simpleota.com", &st)),
-                          "/api/v1/ota/check/", out, sizeof(out)),
-          "build after rejected http");
-    CHECK(strcmp(out, "https://simpleota.com/api/v1/ota/check/") == 0,
+    CHECK(sotaBuildApiUrl(sotaEffectiveServerUrl(sotaSelectServerUrl(
+                              kSotaDefaultServerUrl, "http://simpleota.com", &st)),
+                          "/api/v1/ota/check/", out, sizeof(out)) &&
+              strcmp(out, "https://simpleota.com/api/v1/ota/check/") == 0,
           "rejected http still targets the default");
 
     st = SOTA_URL_OK;
@@ -165,9 +155,8 @@ int main(void)
     CHECK(sotaSelectServerUrl(kSotaDefaultServerUrl, staging, &st) == staging,
           "https staging accepted");
     CHECK(st == SOTA_URL_OK, "accepted status is ok");
-    CHECK(sotaBuildApiUrl(staging, "/api/v1/ota/check/", out, sizeof(out)),
-          "build staging");
-    CHECK(strcmp(out, "https://staging.example.com:8443/api/v1/ota/check/") == 0,
+    CHECK(sotaBuildApiUrl(staging, "/api/v1/ota/check/", out, sizeof(out)) &&
+              strcmp(out, "https://staging.example.com:8443/api/v1/ota/check/") == 0,
           "staging check url");
     st = SOTA_URL_OK;
     CHECK(sotaSelectServerUrl(staging, "http://staging.example.com", &st) == staging,
@@ -185,18 +174,9 @@ int main(void)
           "malformed name");
     CHECK(strcmp(sotaUrlStatusName(99), "malformed") == 0, "unknown status name");
 
-    {
-        size_t i;
-        for (i = 0; i < sizeof(kUrlCases) / sizeof(kUrlCases[0]); ++i) {
-            CHECK(sotaValidateServerUrl(kUrlCases[i].input) == kUrlCases[i].expected,
-                  kUrlCases[i].input);
-        }
-    }
-
     CHECK(sotaBuildApiUrl("HTTPS://SimpleOTA.COM/ota/", "/api/v1/ota/check/",
-                          out, sizeof(out)),
-          "build mixed-case scheme");
-    CHECK(strcmp(out, "https://SimpleOTA.COM/ota/api/v1/ota/check/") == 0,
+                          out, sizeof(out)) &&
+              strcmp(out, "https://SimpleOTA.COM/ota/api/v1/ota/check/") == 0,
           "scheme is written lowercase, host case kept");
     {
         const char* upper = "HTTPS://staging.example.com";
@@ -208,21 +188,17 @@ int main(void)
     CHECK(!sotaBuildApiUrl("HTTP://ota.example.com", "/api/v1/ota/check/",
                            out, sizeof(out)),
           "build refuses uppercase http");
-
     CHECK(sotaBuildApiUrl("https://ota.example.com/", "/api/v1/ota/status/",
-                          out, sizeof(out)),
-          "build trailing slash");
-    CHECK(strcmp(out, "https://ota.example.com/api/v1/ota/status/") == 0,
+                          out, sizeof(out)) &&
+              strcmp(out, "https://ota.example.com/api/v1/ota/status/") == 0,
           "trailing slash stripped once");
     CHECK(!sotaBuildApiUrl("https://ota.example.com///", "/api/v1/ota/check/",
                            out, sizeof(out)),
           "build rejects empty path segments");
     CHECK(sotaBuildApiUrl("https://192.168.0.1:443/base/", "/api/v1/ota/check/",
-                          out, sizeof(out)),
-          "build path prefix");
-    CHECK(strcmp(out, "https://192.168.0.1:443/base/api/v1/ota/check/") == 0,
+                          out, sizeof(out)) &&
+              strcmp(out, "https://192.168.0.1:443/base/api/v1/ota/check/") == 0,
           "path prefix kept");
-
     CHECK(!sotaBuildApiUrl("http://ota.example.com", "/api/v1/ota/check/",
                            out, sizeof(out)),
           "build refuses http");
@@ -235,15 +211,15 @@ int main(void)
         char tiny[8];
         memset(tiny, 'X', sizeof(tiny));
         CHECK(!sotaBuildApiUrl(kSotaDefaultServerUrl, "/api/v1/ota/check/",
-                               tiny, sizeof(tiny)),
-              "short buffer fails");
-        CHECK(tiny[0] == 'X', "short buffer is not written");
+                               tiny, sizeof(tiny)) && tiny[0] == 'X',
+              "short buffer fails and is not written");
     }
     {
         const char* exact = "https://ab";
         char fit[13];
-        CHECK(sotaBuildApiUrl(exact, "/c", fit, sizeof(fit)), "exact fit");
-        CHECK(strcmp(fit, "https://ab/c") == 0, "exact fit bytes");
+        CHECK(sotaBuildApiUrl(exact, "/c", fit, sizeof(fit)) &&
+                  strcmp(fit, "https://ab/c") == 0,
+              "exact fit");
         CHECK(!sotaBuildApiUrl(exact, "/c", fit, 12), "one byte short fails");
     }
 
@@ -253,32 +229,30 @@ int main(void)
           "crlf rejected");
     CHECK(sotaValidateServerUrl("https://example.com/foo\n") == SOTA_URL_MALFORMED,
           "newline in path rejected");
-
     {
-        char label[80];
         char url[96];
-        fillLabel(label, 63, 'a');
-        snprintf(url, sizeof(url), "https://%s", label);
-        CHECK(sotaValidateServerUrl(url) == SOTA_URL_OK, url);
-        fillLabel(label, 64, 'b');
-        snprintf(url, sizeof(url), "https://%s", label);
-        CHECK(sotaValidateServerUrl(url) == SOTA_URL_MALFORMED, url);
+        memcpy(url, "https://", 8);
+        memset(url + 8, 'a', 63);
+        url[71] = '\0';
+        CHECK(sotaValidateServerUrl(url) == SOTA_URL_OK, "63-byte label");
+        memset(url + 8, 'b', 64);
+        url[72] = '\0';
+        CHECK(sotaValidateServerUrl(url) == SOTA_URL_MALFORMED, "64-byte label");
     }
     {
         char url[300];
-        size_t i;
         memcpy(url, "https://", 8);
         for (i = 0; i < 3; ++i) {
             memset(url + 8 + i * 64, 'a', 63);
-            url[8 + i * 64 + 63] = '.';
+            url[71 + i * 64] = '.';
         }
-        memset(url + 8 + 3 * 64, 'b', 56);
+        memset(url + 200, 'b', 56);
         url[256] = '\0';
-        CHECK(strlen(url) == 256u, "boundary url length");
-        CHECK(sotaValidateServerUrl(url) == SOTA_URL_OK, url);
+        CHECK(strlen(url) == 256u && sotaValidateServerUrl(url) == SOTA_URL_OK,
+              "256-byte url");
         url[256] = 'c';
         url[257] = '\0';
-        CHECK(sotaValidateServerUrl(url) == SOTA_URL_MALFORMED, url);
+        CHECK(sotaValidateServerUrl(url) == SOTA_URL_MALFORMED, "257-byte url");
     }
 
     printf("===========================\n");

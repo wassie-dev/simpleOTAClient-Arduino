@@ -21,8 +21,93 @@ static int g_failures = 0;
         }                                                        \
     } while (0)
 
-#define ACCEPT(url) CHECK(sotaValidateServerUrl(url) == SOTA_URL_OK, url)
-#define REJECT(url, want) CHECK(sotaValidateServerUrl(url) == (want), url)
+struct UrlCase {
+    const char* input;
+    SotaUrlStatus expected;
+};
+
+static const UrlCase kUrlCases[] = {
+    {"https://simpleota.com", SOTA_URL_OK},
+    {"https://simpleota.com/", SOTA_URL_OK},
+    {"https://simpleota.com/ota/", SOTA_URL_OK},
+    {"https://localhost", SOTA_URL_OK},
+    {"https://localhost:8443", SOTA_URL_OK},
+    {"https://ota.local", SOTA_URL_OK},
+    {"https://my-ota.example.co.uk", SOTA_URL_OK},
+    {"https://SimpleOTA.COM", SOTA_URL_OK},
+    {"https://127.0.0.1", SOTA_URL_OK},
+    {"https://127.0.0.1:8443", SOTA_URL_OK},
+    {"https://192.168.0.1:443/base/", SOTA_URL_OK},
+    {"https://10.0.0.2", SOTA_URL_OK},
+    {"https://255.255.255.255", SOTA_URL_OK},
+    {"https://0.0.0.0", SOTA_URL_OK},
+    {"https://[::1]", SOTA_URL_OK},
+    {"https://[::1]:8443", SOTA_URL_OK},
+    {"https://[::1]/ota", SOTA_URL_OK},
+    {"https://[2001:db8::1]", SOTA_URL_OK},
+    {"https://[2001:DB8::1]/ota/", SOTA_URL_OK},
+    {"https://[1:2:3:4:5:6:7:8]", SOTA_URL_OK},
+    {"https://[1:2:3:4:5:6:7::]", SOTA_URL_OK},
+    {"https://[::1:2:3:4:5:6:7]", SOTA_URL_OK},
+    {"https://[1::]", SOTA_URL_OK},
+    {"https://[::]", SOTA_URL_OK},
+    {"https://[1:2:3:4:5:6:7:8::]", SOTA_URL_MALFORMED},
+    {"https://[::1:2:3:4:5:6:7:8]", SOTA_URL_MALFORMED},
+    {"https://[1:2:3:4:5:6:7:8:9]", SOTA_URL_MALFORMED},
+    {"https://example.com:65535", SOTA_URL_OK},
+    {"https://example.com/v1.2/ota", SOTA_URL_OK},
+    {"https://example.com/a+b", SOTA_URL_OK},
+    {"https://xn--e1afmkfd.example", SOTA_URL_OK},
+    {"http://simpleota.com", SOTA_URL_NOT_HTTPS},
+    {"HTTP://simpleota.com", SOTA_URL_NOT_HTTPS},
+    {"HtTp://127.0.0.1:8080", SOTA_URL_NOT_HTTPS},
+    {"http://localhost/ota", SOTA_URL_NOT_HTTPS},
+    {"HTTPS://simpleota.com", SOTA_URL_OK},
+    {"Https://ota.example.com:8443", SOTA_URL_OK},
+    {"HtTpS://localhost/ota/", SOTA_URL_OK},
+    {"ftp://simpleota.com", SOTA_URL_MALFORMED},
+    {"https://", SOTA_URL_MALFORMED},
+    {"https:///", SOTA_URL_MALFORMED},
+    {"https:///etc", SOTA_URL_MALFORMED},
+    {"https://:443", SOTA_URL_MALFORMED},
+    {"https://example.com:", SOTA_URL_MALFORMED},
+    {"https://example.com:/api", SOTA_URL_MALFORMED},
+    {"https://example.com:0", SOTA_URL_MALFORMED},
+    {"https://example.com:0443", SOTA_URL_MALFORMED},
+    {"https://example.com:65536", SOTA_URL_MALFORMED},
+    {"https://example.com:443a", SOTA_URL_MALFORMED},
+    {"https://example.com:-1", SOTA_URL_MALFORMED},
+    {"https://user:pass@example.com", SOTA_URL_MALFORMED},
+    {"https://example.com@evil.com", SOTA_URL_MALFORMED},
+    {"https://example.com/a/../b", SOTA_URL_MALFORMED},
+    {"https://example.com/a/./b", SOTA_URL_MALFORMED},
+    {"https://example.com/a//b", SOTA_URL_MALFORMED},
+    {"https://example.com///", SOTA_URL_MALFORMED},
+    {"https://example.com?q=1", SOTA_URL_MALFORMED},
+    {"https://example.com#frag", SOTA_URL_MALFORMED},
+    {"https://example.com/foo bar", SOTA_URL_MALFORMED},
+    {"https://ex ample.com", SOTA_URL_MALFORMED},
+    {"https://256.0.0.1", SOTA_URL_MALFORMED},
+    {"https://192.168.001.1", SOTA_URL_MALFORMED},
+    {"https://127.0.0.1.2", SOTA_URL_MALFORMED},
+    {"https://127.1", SOTA_URL_MALFORMED},
+    {"https://-bad.com", SOTA_URL_MALFORMED},
+    {"https://bad-.com", SOTA_URL_MALFORMED},
+    {"https://example.com.", SOTA_URL_MALFORMED},
+    {"https://.example.com", SOTA_URL_MALFORMED},
+    {"https://example..com", SOTA_URL_MALFORMED},
+    {"https://ex_ample.com", SOTA_URL_MALFORMED},
+    {"https://[::1", SOTA_URL_MALFORMED},
+    {"https://[::1]:", SOTA_URL_MALFORMED},
+    {"https://[]", SOTA_URL_MALFORMED},
+    {"https://[:::1]", SOTA_URL_MALFORMED},
+    {"https://[1::2::3]", SOTA_URL_MALFORMED},
+    {"https://[12345::1]", SOTA_URL_MALFORMED},
+    {"https://[gggg::1]", SOTA_URL_MALFORMED},
+    {"https://[fe80::1%eth0]", SOTA_URL_MALFORMED},
+    {"https://example.com\\path", SOTA_URL_MALFORMED},
+    {" https://example.com", SOTA_URL_MALFORMED},
+};
 
 static void fillLabel(char* dest, size_t n, char c)
 {
@@ -100,37 +185,13 @@ int main(void)
           "malformed name");
     CHECK(strcmp(sotaUrlStatusName(99), "malformed") == 0, "unknown status name");
 
-    ACCEPT("https://simpleota.com");
-    ACCEPT("https://simpleota.com/");
-    ACCEPT("https://simpleota.com/ota/");
-    ACCEPT("https://localhost");
-    ACCEPT("https://localhost:8443");
-    ACCEPT("https://ota.local");
-    ACCEPT("https://my-ota.example.co.uk");
-    ACCEPT("https://SimpleOTA.COM");
-    ACCEPT("https://127.0.0.1");
-    ACCEPT("https://127.0.0.1:8443");
-    ACCEPT("https://192.168.0.1:443/base/");
-    ACCEPT("https://10.0.0.2");
-    ACCEPT("https://255.255.255.255");
-    ACCEPT("https://0.0.0.0");
-    ACCEPT("https://[::1]");
-    ACCEPT("https://[::1]:8443");
-    ACCEPT("https://[::1]/ota");
-    ACCEPT("https://[2001:db8::1]");
-    ACCEPT("https://[2001:DB8::1]/ota/");
-    ACCEPT("https://[1:2:3:4:5:6:7:8]");
-    ACCEPT("https://[1:2:3:4:5:6:7::]");
-    ACCEPT("https://[::1:2:3:4:5:6:7]");
-    ACCEPT("https://[1::]");
-    ACCEPT("https://[::]");
-    REJECT("https://[1:2:3:4:5:6:7:8::]", SOTA_URL_MALFORMED);
-    REJECT("https://[::1:2:3:4:5:6:7:8]", SOTA_URL_MALFORMED);
-    REJECT("https://[1:2:3:4:5:6:7:8:9]", SOTA_URL_MALFORMED);
-    ACCEPT("https://example.com:65535");
-    ACCEPT("https://example.com/v1.2/ota");
-    ACCEPT("https://example.com/a+b");
-    ACCEPT("https://xn--e1afmkfd.example");
+    {
+        size_t i;
+        for (i = 0; i < sizeof(kUrlCases) / sizeof(kUrlCases[0]); ++i) {
+            CHECK(sotaValidateServerUrl(kUrlCases[i].input) == kUrlCases[i].expected,
+                  kUrlCases[i].input);
+        }
+    }
 
     CHECK(sotaBuildApiUrl("HTTPS://SimpleOTA.COM/ota/", "/api/v1/ota/check/",
                           out, sizeof(out)),
@@ -188,69 +249,20 @@ int main(void)
 
     CHECK(sotaValidateServerUrl(NULL) == SOTA_URL_MALFORMED, "null url");
     CHECK(sotaValidateServerUrl("") == SOTA_URL_MALFORMED, "empty url");
-    REJECT("http://simpleota.com", SOTA_URL_NOT_HTTPS);
-    REJECT("HTTP://simpleota.com", SOTA_URL_NOT_HTTPS);
-    REJECT("HtTp://127.0.0.1:8080", SOTA_URL_NOT_HTTPS);
-    REJECT("http://localhost/ota", SOTA_URL_NOT_HTTPS);
-    ACCEPT("HTTPS://simpleota.com");
-    ACCEPT("Https://ota.example.com:8443");
-    ACCEPT("HtTpS://localhost/ota/");
-    REJECT("ftp://simpleota.com", SOTA_URL_MALFORMED);
-    REJECT("https://", SOTA_URL_MALFORMED);
-    REJECT("https:///", SOTA_URL_MALFORMED);
-    REJECT("https:///etc", SOTA_URL_MALFORMED);
-    REJECT("https://:443", SOTA_URL_MALFORMED);
-    REJECT("https://example.com:", SOTA_URL_MALFORMED);
-    REJECT("https://example.com:/api", SOTA_URL_MALFORMED);
-    REJECT("https://example.com:0", SOTA_URL_MALFORMED);
-    REJECT("https://example.com:0443", SOTA_URL_MALFORMED);
-    REJECT("https://example.com:65536", SOTA_URL_MALFORMED);
-    REJECT("https://example.com:443a", SOTA_URL_MALFORMED);
-    REJECT("https://example.com:-1", SOTA_URL_MALFORMED);
-    REJECT("https://user:pass@example.com", SOTA_URL_MALFORMED);
-    REJECT("https://example.com@evil.com", SOTA_URL_MALFORMED);
-    REJECT("https://example.com/a/../b", SOTA_URL_MALFORMED);
-    REJECT("https://example.com/a/./b", SOTA_URL_MALFORMED);
-    REJECT("https://example.com/a//b", SOTA_URL_MALFORMED);
-    REJECT("https://example.com///", SOTA_URL_MALFORMED);
-    REJECT("https://example.com?q=1", SOTA_URL_MALFORMED);
-    REJECT("https://example.com#frag", SOTA_URL_MALFORMED);
-    REJECT("https://example.com/foo bar", SOTA_URL_MALFORMED);
-    REJECT("https://ex ample.com", SOTA_URL_MALFORMED);
     CHECK(sotaValidateServerUrl("https://example.com\r\n") == SOTA_URL_MALFORMED,
           "crlf rejected");
     CHECK(sotaValidateServerUrl("https://example.com/foo\n") == SOTA_URL_MALFORMED,
           "newline in path rejected");
-    REJECT("https://256.0.0.1", SOTA_URL_MALFORMED);
-    REJECT("https://192.168.001.1", SOTA_URL_MALFORMED);
-    REJECT("https://127.0.0.1.2", SOTA_URL_MALFORMED);
-    REJECT("https://127.1", SOTA_URL_MALFORMED);
-    REJECT("https://-bad.com", SOTA_URL_MALFORMED);
-    REJECT("https://bad-.com", SOTA_URL_MALFORMED);
-    REJECT("https://example.com.", SOTA_URL_MALFORMED);
-    REJECT("https://.example.com", SOTA_URL_MALFORMED);
-    REJECT("https://example..com", SOTA_URL_MALFORMED);
-    REJECT("https://ex_ample.com", SOTA_URL_MALFORMED);
-    REJECT("https://[::1", SOTA_URL_MALFORMED);
-    REJECT("https://[::1]:", SOTA_URL_MALFORMED);
-    REJECT("https://[]", SOTA_URL_MALFORMED);
-    REJECT("https://[:::1]", SOTA_URL_MALFORMED);
-    REJECT("https://[1::2::3]", SOTA_URL_MALFORMED);
-    REJECT("https://[12345::1]", SOTA_URL_MALFORMED);
-    REJECT("https://[gggg::1]", SOTA_URL_MALFORMED);
-    REJECT("https://[fe80::1%eth0]", SOTA_URL_MALFORMED);
-    REJECT("https://example.com\\path", SOTA_URL_MALFORMED);
-    REJECT(" https://example.com", SOTA_URL_MALFORMED);
 
     {
         char label[80];
         char url[96];
         fillLabel(label, 63, 'a');
         snprintf(url, sizeof(url), "https://%s", label);
-        ACCEPT(url);
+        CHECK(sotaValidateServerUrl(url) == SOTA_URL_OK, url);
         fillLabel(label, 64, 'b');
         snprintf(url, sizeof(url), "https://%s", label);
-        REJECT(url, SOTA_URL_MALFORMED);
+        CHECK(sotaValidateServerUrl(url) == SOTA_URL_MALFORMED, url);
     }
     {
         char url[300];
@@ -263,10 +275,10 @@ int main(void)
         memset(url + 8 + 3 * 64, 'b', 56);
         url[256] = '\0';
         CHECK(strlen(url) == 256u, "boundary url length");
-        ACCEPT(url);
+        CHECK(sotaValidateServerUrl(url) == SOTA_URL_OK, url);
         url[256] = 'c';
         url[257] = '\0';
-        REJECT(url, SOTA_URL_MALFORMED);
+        CHECK(sotaValidateServerUrl(url) == SOTA_URL_MALFORMED, url);
     }
 
     printf("===========================\n");

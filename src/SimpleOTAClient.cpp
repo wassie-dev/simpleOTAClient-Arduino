@@ -28,6 +28,7 @@
 #include "SimpleOTASigning.h"
 #include "SimpleOTATime.h"
 #include "SimpleOTATrial.h"
+#include "SimpleOTAUrl.h"
 #include "SimpleOTAWatchdog.h"
 
 #include "sdkconfig.h"
@@ -357,6 +358,7 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _securityMode(nullptr),
       _versionLabel(nullptr),
       _channel(nullptr),
+      _serverUrl(kSotaDefaultServerUrl),
       _caCert(SimpleOTAClient::kSimpleOtaRootCA),
       _autoReboot(true),
       _hasOffer(false),
@@ -394,6 +396,19 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         _deviceId = _deviceIdBuf;
     }
+}
+
+bool SimpleOTAClient::setServerUrl(const char* url) {
+    SotaUrlStatus status = SOTA_URL_MALFORMED;
+    const char* selected = sotaSelectServerUrl(_serverUrl, url, &status);
+    if (status != SOTA_URL_OK) {
+        Serial.printf("[SimpleOTAClient] setServerUrl rejected (%s). Keeping %s\n",
+                      sotaUrlStatusName(status),
+                      _serverUrl);
+        return false;
+    }
+    _serverUrl = selected;
+    return true;
 }
 
 void SimpleOTAClient::setCACert(const char* pemRootCA)        { _caCert = pemRootCA; }
@@ -633,7 +648,12 @@ int SimpleOTAClient::postJson(const char* path, const String& body, String* outR
         return -1;
     }
     warnInsecureOnce();
-    String url = String("https://simpleota.com") + path;
+    char joined[kSotaServerUrlMaxLen + 32];
+    if (!sotaBuildApiUrl(_serverUrl, path, joined, sizeof(joined))) {
+        SOTA_LOG("postJson: refusing server url");
+        return -1;
+    }
+    String url(joined);
     for (int attempt = 0; attempt < 2; ++attempt) {
         SimpleOtaTLSClient client;
         if (_caCert) client.setCACert(_caCert);

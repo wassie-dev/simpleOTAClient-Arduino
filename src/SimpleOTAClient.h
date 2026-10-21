@@ -166,6 +166,24 @@ public:
     void setCACert(const char* pemRootCA);
 
     /**
+     * @brief Point check() and status posts at another SimpleOTA server.
+     *
+     * Call before begin(), and before check() in polling mode. Not while a
+     * check or status post may be running: managed mode reads the pointer
+     * with no lock. The pointer is stored, not copied, and must outlive
+     * this object. Until a URL is accepted the base is https://simpleota.com.
+     *
+     * https is accepted in any case. http and any other value return false,
+     * print a [SimpleOTAClient] line (not_https or malformed), and leave the
+     * previous URL in place. Downloads still use the pre-signed URL. TLS
+     * verification is unchanged; use setCACert() for a different CA.
+     *
+     * @param url  Server base.
+     * @return true when the URL is accepted.
+     */
+    bool setServerUrl(const char* url);
+
+    /**
      * @brief Control whether apply() automatically reboots after a successful flash.
      *
      * When true (default), apply() calls esp_restart() after a successful flash.
@@ -512,6 +530,7 @@ private:
     const char* _securityMode;
     const char* _versionLabel;     ///< nullptr = read from NVS.
     const char* _channel;          ///< nullptr = field omitted.
+    const char* _serverUrl;        ///< Check and status only. Not locked. Not used for downloads.
     const char* _caCert;           ///< nullptr = setInsecure().
     bool        _autoReboot;
 

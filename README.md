@@ -260,6 +260,19 @@ Overrides the CA certificate used for HTTPS verification. By default the library
 
 ---
 
+### `bool setServerUrl(const char* url)`
+
+Points `check()` and status posts at another SimpleOTA server. Call it before `begin()`, and before `check()` in polling mode, not while a check or status post may be running. The pointer is stored and must outlive the client. Until a URL is accepted, the base is `https://simpleota.com`.
+
+```cpp
+static const char kOtaBase[] = "https://ota.example.com";
+ota.setServerUrl(kOtaBase);
+```
+
+`https` is accepted in any case. `http` and any other value return `false`, print a `[SimpleOTAClient]` line (`not_https` or `malformed`), and leave the previous URL in place. Downloads still use the pre-signed URL. TLS verification is unchanged; use `setCACert()` for a different CA.
+
+---
+
 ### `void setAutoReboot(bool enabled)`
 
 Default: `true`. When `false`, `apply()` returns `OTA_SUCCESS` without calling `esp_restart()`, giving the application control over when the reboot happens. The NVS build number write and `validated` event still occur before the function returns. The library does **not** emit a `reboot` event in this mode; use [`rebootForUpdate()`](#void-rebootforupdate) when the application is ready to restart so the server sees the same event sequence as the auto-reboot path. Until that reboot, further `apply()` calls return `OTA_REBOOT_PENDING` without downloading.

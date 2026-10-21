@@ -31,6 +31,7 @@ static const struct {
     {"https:///", SOTA_URL_MALFORMED},
     {"ftp://simpleota.com", SOTA_URL_MALFORMED},
     {"https://a b", SOTA_URL_MALFORMED},
+    {"https://ota\texample.com", SOTA_URL_MALFORMED},
     {"https://h\x7f", SOTA_URL_MALFORMED},
     {"", SOTA_URL_MALFORMED},
 };

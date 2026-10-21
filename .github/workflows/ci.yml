@@ -52,6 +52,11 @@ jobs:
           g++ -std=c++11 -Wall -Wextra -Werror -Isrc -o test_watchdog test/native/test_watchdog.cpp
           ./test_watchdog
 
+      - name: Build and run server URL tests
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror -Isrc -o test_url test/native/test_url.cpp
+          ./test_url
+
   compile:
     name: Compile examples (ESP32)
     runs-on: ubuntu-latest

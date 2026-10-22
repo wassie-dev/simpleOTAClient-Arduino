@@ -17,6 +17,8 @@ Signing here protects the delivery path. It is not Secure Boot. They stack if yo
 
 [Quickstart (project, client, first update)](https://wiki.simpleota.com/getting-started/?utm_source=arduino_lib&utm_medium=readme&utm_campaign=signup_v1)
 
+Starting a new project? [simpleOTA-starter-arduino](https://github.com/wassie-dev/simpleOTA-starter-arduino) is a template repo with a working sketch and a GitHub Actions release workflow already set up.
+
 [Site](https://simpleota.com/?utm_source=arduino_lib&utm_medium=readme&utm_campaign=signup_v1)
 
 ---

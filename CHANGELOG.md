@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+
+- `setServerUrl()` lets `check()` and status reports target another https SimpleOTA server. Firmware downloads still use the pre-signed URL from the offer, and an invalid URL is rejected while the previous one is kept.
+
 ## 0.5.0
 
 ### Upgrading

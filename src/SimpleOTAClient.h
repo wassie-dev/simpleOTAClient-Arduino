@@ -149,7 +149,8 @@ public:
                     const char* boardId          = nullptr,
                     const char* hardwareRevision = nullptr);
 
-    /// Stops the managed task and lets another instance run.
+    /// Waits for the managed task to stop, then lets another instance run.
+    /// Never destroy the client from its own onEvent callback.
     ~SimpleOTAClient();
 
     // The core keeps a pointer to this instance, so it cannot be copied.

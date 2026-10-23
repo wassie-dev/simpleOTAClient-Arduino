@@ -63,7 +63,21 @@ void sota_app_log(int level, const char* fmt, ...) {
 // The core's application interface
 // ---------------------------------------------------------------------------
 
-static_assert(OTA_EVENT_ROLLING_BACK == (int)SOTA_EVENT_ROLLING_BACK, "OTAEvent follows sota_event_id_t");
+static_assert(OTA_EVENT_CHECK_DONE == (int)SOTA_EVENT_CHECK_DONE &&
+                  OTA_EVENT_UPDATE_AVAILABLE == (int)SOTA_EVENT_UPDATE_AVAILABLE &&
+                  OTA_EVENT_DOWNLOAD_PROGRESS == (int)SOTA_EVENT_DOWNLOAD_PROGRESS &&
+                  OTA_EVENT_UPDATE_FAILED == (int)SOTA_EVENT_UPDATE_FAILED &&
+                  OTA_EVENT_BEFORE_REBOOT == (int)SOTA_EVENT_BEFORE_REBOOT &&
+                  OTA_EVENT_TRIAL_BOOT == (int)SOTA_EVENT_TRIAL_BOOT &&
+                  OTA_EVENT_CONFIRMED == (int)SOTA_EVENT_CONFIRMED &&
+                  OTA_EVENT_ROLLING_BACK == (int)SOTA_EVENT_ROLLING_BACK,
+              "OTAEvent follows sota_event_id_t");
+static_assert(OTA_SUCCESS == (int)SOTA_APPLY_OK && OTA_CHECKSUM_FAIL == (int)SOTA_APPLY_CHECKSUM_FAIL &&
+                  OTA_FLASH_FAIL == (int)SOTA_APPLY_FLASH_FAIL && OTA_NO_OFFER == (int)SOTA_APPLY_NO_OFFER &&
+                  OTA_SIGNATURE_FAIL == (int)SOTA_APPLY_SIGNATURE_FAIL &&
+                  OTA_REBOOT_PENDING == (int)SOTA_APPLY_REBOOT_PENDING &&
+                  OTA_UNCONFIRMED == (int)SOTA_APPLY_UNCONFIRMED,
+              "OTAResult follows sota_apply_result_t");
 
 void sota_app_event(void* user, const sota_event_t* event) {
     SimpleOTAClient* self = static_cast<SimpleOTAClient*>(user);
@@ -166,10 +180,22 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
     cfg.rollback = true;
     cfg.user = this;
     _engineOk = sota_engine_init(&_engine, &cfg);
+    // Also in polling mode: the confirm timeout's rollback task uses it.
+    _runner.engine = &_engine;
+    _runner.is_connected = connectedFor;
+    _runner.ctx = this;
+    _runner.stack_size = 8192;
+    _runner.priority = 1;
 }
 
+// The task uses this object, so it must be gone first, however long its
+// download takes. From the task itself (an onEvent callback) it cannot be.
 SimpleOTAClient::~SimpleOTAClient() {
-    end();
+    if (sota_runner_on_task(&_runner)) {
+        SOTA_LOGE("a SimpleOTAClient cannot be destroyed from its own callback");
+        abort();
+    }
+    while (!sota_runner_stop(&_runner, 60000)) SOTA_LOGW("destructor: waiting for the task to stop");
     sota_engine_deinit(&_engine);
 }
 
@@ -301,12 +327,7 @@ void SimpleOTAClient::begin(uint32_t checkIntervalSec,
     _engine.cfg.check_interval_s = checkIntervalSec ? checkIntervalSec : SIMPLEOTA_CHECK_INTERVAL_S;
     _engine.cfg.auto_confirm = _managedAutoConfirm;
     _isConnected = isConnected;
-    _runner.engine = &_engine;
     _runner.initial_delay_ms = initialDelayMs;
-    _runner.is_connected = connectedFor;
-    _runner.ctx = this;
-    _runner.stack_size = 8192;
-    _runner.priority = 1;
     // On the caller's task, so the confirm timer runs before begin() returns.
     sota_engine_validate_boot(&_engine);
     if (!sota_runner_start(&_runner, "simpleota")) SOTA_LOGE("begin: no memory for the task");

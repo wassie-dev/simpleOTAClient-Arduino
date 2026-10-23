@@ -379,7 +379,7 @@ Sets the release channel this device subscribes to (e.g. `"stable"`, `"beta"`). 
 
 ### `const char* lastOfferedVersion()`
 
-Returns the version label string from the last update offered by `check()` (e.g. `"1.4.2"`). Valid between a successful `check()` and the `apply()` call that consumes the offer. Returns an empty string before any offer has been received and after `apply()` clears the offer.
+Returns the version label string from the last update offered by `check()` (e.g. `"1.4.2"`). Valid until the next `check()`. Returns an empty string when the last `check()` offered nothing, and after an `apply()` that failed.
 
 ---
 

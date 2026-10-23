@@ -2,7 +2,8 @@
  * @file SimpleOTAClient.h
  * @brief SimpleOTAClient Arduino client library for ESP32 (Arduino-ESP32 core).
  *
- * See README.md for the build-number / NVS rule. It is load-bearing.
+ * See README.md for how build numbers work: SimpleOTA assigns them, and the
+ * library keeps the running one in NVS.
  */
 
 #ifndef SIMPLEOTACLIENT_H
@@ -23,10 +24,8 @@
 
 #ifndef SIMPLEOTA_CHECK_INTERVAL_S
 /**
- * @brief Default check interval in seconds (informational only).
- *
- * The library does not schedule checks internally; this constant is exposed
- * for examples and user code that polls in loop().
+ * @brief Default check interval in seconds: begin()'s default, and a
+ *        sensible pace for a sketch that polls in loop().
  */
 #define SIMPLEOTA_CHECK_INTERVAL_S 3600
 #endif
@@ -66,9 +65,9 @@
 /**
  * @brief check() retry interval in seconds during a TRIAL boot (managed mode).
  *
- * Instead of the normal checkIntervalSec, the managed task retries on this
- * shorter interval until a successful server response is received or the
- * confirm timeout expires. Fixed by the shared core.
+ * Instead of the normal checkIntervalSec, the managed task checks on this
+ * shorter interval until the trial is confirmed or rolled back. Fixed by
+ * the shared core.
  */
 #define SIMPLEOTA_TRIAL_RETRY_INTERVAL_S SOTA_TRIAL_RETRY_INTERVAL_S
 
@@ -82,9 +81,9 @@
 enum OTAResult {
     OTA_SUCCESS        = 0,  ///< Firmware flashed and validated; reboot pending.
     OTA_CHECKSUM_FAIL  = 1,  ///< Downloaded payload did not match expected SHA-256.
-    OTA_FLASH_FAIL     = 2,  ///< Network or partition write failure.
+    OTA_FLASH_FAIL     = 2,  ///< Network, URL, partition or NVS write failure.
     OTA_NO_OFFER       = 3,  ///< apply() called without a successful preceding check().
-    OTA_SIGNATURE_FAIL = 4,  ///< Ed25519 signature verification failed; image rejected before it was marked bootable.
+    OTA_SIGNATURE_FAIL = 4,  ///< A required Ed25519 signature is missing or wrong; image rejected before it was marked bootable.
     OTA_REBOOT_PENDING = 5,  ///< An update is flashed and waits for rebootForUpdate() (setAutoReboot(false)). Nothing was downloaded.
     OTA_UNCONFIRMED    = 6,  ///< The running image is on trial. Call confirm(), then apply() again. The offer is kept.
     OTA_DOWNGRADE      = 7   ///< The offered build is not above the running one; refused (anti-rollback).
@@ -99,7 +98,7 @@ enum OTAEvent {
     OTA_EVENT_UPDATE_AVAILABLE,   ///< An update was offered.
     OTA_EVENT_DOWNLOAD_PROGRESS,  ///< bytesDone / bytesTotal advanced.
     OTA_EVENT_UPDATE_FAILED,      ///< The update was dropped; reason says why.
-    OTA_EVENT_BEFORE_REBOOT,      ///< Flashed and verified; the reboot comes next.
+    OTA_EVENT_BEFORE_REBOOT,      ///< Flashed and verified; it runs from the next reboot.
     OTA_EVENT_TRIAL_BOOT,         ///< Running an image that is not confirmed yet.
     OTA_EVENT_CONFIRMED,          ///< The trial image's confirmed report was delivered.
     OTA_EVENT_ROLLING_BACK        ///< The trial failed; the previous image starts next.
@@ -111,7 +110,7 @@ struct OTAEventInfo {
     const char* reason;       ///< A reason token or server status, or nullptr.
     uint32_t    buildNumber;  ///< The build the event is about, 0 when none.
     size_t      bytesDone;    ///< OTA_EVENT_DOWNLOAD_PROGRESS: bytes written.
-    size_t      bytesTotal;   ///< OTA_EVENT_DOWNLOAD_PROGRESS: bytes expected, 0 when unknown.
+    size_t      bytesTotal;   ///< OTA_EVENT_DOWNLOAD_PROGRESS: bytes expected; OTA_EVENT_UPDATE_AVAILABLE: the offer's size. 0 when unknown.
 };
 
 /**
@@ -235,8 +234,8 @@ public:
      *
      * Convenience helper for applications using setAutoReboot(false). Posts
      * `event="reboot"` to /api/v1/ota/status/ for the update that is waiting
-     * (best-effort; the function does not block on network failure beyond the
-     * normal HTTPClient timeout), then calls esp_restart(). Does not return.
+     * (best-effort: at most two attempts, each bounded by
+     * SIMPLEOTA_HTTP_TIMEOUT_MS), then calls esp_restart(). Does not return.
      *
      * The event names the waiting update's deployment even after later
      * check() calls, or after end() and begin(). With no update waiting
@@ -269,9 +268,11 @@ public:
     /**
      * @brief Set arbitrary key/value metadata for server-side deployment targeting.
      *
-     * @param jsonObject  A valid JSON object literal, e.g. "{\"site\":\"factory-A\"}".
-     *                    The string is embedded verbatim in the request body; no
-     *                    escaping is performed. nullptr (default) = field omitted.
+     * @param jsonObject  A JSON object literal, e.g. "{\"site\":\"factory-A\"}",
+     *                    embedded verbatim in the request body. Anything that is
+     *                    not one JSON object is left out, with a warning.
+     *                    nullptr (default) = field omitted. The pointer is
+     *                    stored, not copied.
      */
     void setLabels(const char* jsonObject);
 
@@ -375,10 +376,10 @@ public:
     /**
      * @brief Return the version label from the last check() offer.
      *
-     * Valid between a successful check() and the apply() that consumes the offer.
+     * Valid until the next check().
      *
-     * @return Offered version label string, e.g. "1.4.2". Returns an empty string
-     *         before any offer has been received, or after apply() clears the offer.
+     * @return Offered version label string, e.g. "1.4.2". Empty when the last
+     *         check() offered nothing, or after an apply() that failed.
      */
     const char* lastOfferedVersion() const;
 
@@ -409,7 +410,7 @@ public:
     // of the next check().
     //
     // In managed mode (begin()), the library auto-calls confirm() on
-    // the first HTTP 200 from /check/ unless setManagedAutoConfirm(false)
+    // the first successful response from /check/ unless setManagedAutoConfirm(false)
     // was called. In polling mode (manual check()/apply()), the application
     // is responsible for calling confirm() once it determines the new
     // image is healthy.
@@ -427,8 +428,8 @@ public:
      *
      * Managed mode only. Default: true.
      *
-     * When true, the managed task auto-calls confirm() on the first HTTP
-     * 200 from /check/ during a TRIAL boot. When false, the application must call
+     * When true, the managed task auto-calls confirm() on the first
+     * successful response from /check/ during a TRIAL boot. When false, the application must call
      * confirm() itself (for example after its own
      * health checks complete).
      *
@@ -541,7 +542,8 @@ public:
     void end();
 
     /**
-     * @brief PEM bundle covering simpleota.com and its pre-signed object-storage host.
+     * @brief The ISRG Root X1 certificate (PEM), which simpleota.com and its
+     *        pre-signed object-storage host both chain to.
      *
      * The default for setCACert().
      */

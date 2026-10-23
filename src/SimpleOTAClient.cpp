@@ -355,10 +355,10 @@ bool SimpleOTAClient::connectedFor(void* self) {
 #if SOTA_BOOTLOADER_ROLLBACK
 // initArduino() accepts a pending image before setup() unless this returns
 // true. Only a SimpleOTA trial is held; any other image, such as one written
-// by ArduinoOTA, is accepted as usual. This runs before the core's own
-// nvs_flash_init(): initialise here, never erase. Serial is not up yet, so
+// by ArduinoOTA, is accepted as usual. This runs before the Arduino core's
+// own nvs_flash_init(): initialise here, never erase. Serial is not up yet, so
 // nothing is logged. Kept in this file so a PlatformIO archive links it in
-// with the class and it replaces the core's weak definition.
+// with the class and it replaces the Arduino core's weak definition.
 extern "C" bool verifyRollbackLater() {
     if (nvs_flash_init() != ESP_OK) return false;
     const bool hold = sota_engine_hold_pending_image();

@@ -84,6 +84,30 @@ enum OTAResult {
 };
 
 /**
+ * @brief Lifecycle events passed to onEvent(), in the order of the ESP-IDF
+ *        client's simpleota_event_id_t.
+ */
+enum OTAEvent {
+    OTA_EVENT_CHECK_DONE,         ///< A check completed; no update offered.
+    OTA_EVENT_UPDATE_AVAILABLE,   ///< An update was offered.
+    OTA_EVENT_DOWNLOAD_PROGRESS,  ///< bytesDone / bytesTotal advanced.
+    OTA_EVENT_UPDATE_FAILED,      ///< The update was dropped; reason says why.
+    OTA_EVENT_BEFORE_REBOOT,      ///< Flashed and verified; the reboot comes next.
+    OTA_EVENT_TRIAL_BOOT,         ///< Running an image that is not confirmed yet.
+    OTA_EVENT_CONFIRMED,          ///< The trial image's confirmed report was delivered.
+    OTA_EVENT_ROLLING_BACK        ///< The trial failed; the previous image starts next.
+};
+
+/** @brief One event. Its strings live only for the callback. */
+struct OTAEventInfo {
+    OTAEvent    id;
+    const char* reason;       ///< A reason token or server status, or nullptr.
+    uint32_t    buildNumber;  ///< The build the event is about, 0 when none.
+    size_t      bytesDone;    ///< OTA_EVENT_DOWNLOAD_PROGRESS: bytes written.
+    size_t      bytesTotal;   ///< OTA_EVENT_DOWNLOAD_PROGRESS: bytes expected, 0 when unknown.
+};
+
+/**
  * @class SimpleOTAClient
  * @brief Over-the-air firmware update client for ESP32.
  *
@@ -345,6 +369,18 @@ public:
      */
     const char* lastOfferedVersion() const;
 
+    /**
+     * @brief Get lifecycle events: checks, download progress, failures with
+     *        their reason, the reboot, and the trial's confirm or rollback.
+     *
+     * Called on the task that runs the update: the managed task, or the one
+     * that calls check(), apply() or confirmRunning(). Keep it quick, and
+     * don't call the client from it.
+     *
+     * @param callback  nullptr to stop.
+     */
+    void onEvent(void (*callback)(const OTAEventInfo& event));
+
     // ------------------------------------------------------------------
     // Trial-install / rollback API
     //
@@ -540,11 +576,13 @@ private:
     // Managed mode: the core's task.
     sota_runner_t _runner;
     void        (*_onResult)(OTAResult);
+    void        (*_onEvent)(const OTAEventInfo&);
     bool        (*_isConnected)();
     static bool  connectedFor(void* self);
     static void  resultFor(sota_apply_result_t result, void* self);
     bool         setUp(const char* caller);  ///< _engineOk, with a warning when false.
 
+    friend void sota_app_event(void* user, const sota_event_t* event);
     friend void sota_app_wake(void* user);
     friend int  sota_net_post(void* user, const char* url, const char* token,
                               const char* body, char* resp, size_t cap);

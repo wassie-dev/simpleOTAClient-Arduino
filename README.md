@@ -240,6 +240,10 @@ Executes the offer stored by the most recent successful `check()`.
 
 ---
 
+### `void onEvent(void (*callback)(const OTAEventInfo& event))`
+
+Calls `callback` for each lifecycle event, the same events the ESP-IDF client's `event_cb` gets: `OTA_EVENT_CHECK_DONE`, `OTA_EVENT_UPDATE_AVAILABLE`, `OTA_EVENT_DOWNLOAD_PROGRESS` (`bytesDone` of `bytesTotal`), `OTA_EVENT_UPDATE_FAILED` (`reason` says why), `OTA_EVENT_BEFORE_REBOOT`, `OTA_EVENT_TRIAL_BOOT`, `OTA_EVENT_CONFIRMED` and `OTA_EVENT_ROLLING_BACK`. `buildNumber` is the build the event is about. It runs on the task that drives the update (the managed task, or the one calling `check()`, `apply()` or `confirmRunning()`), so keep it short and don't call the client from it. Pass `nullptr` to stop.
+
 ### `bool report(const char* event, const char* reason = nullptr)`
 
 Manually posts a single status event to `/api/v1/ota/status/`. Useful for custom lifecycle control flows. Returns `true` on HTTP 2xx.

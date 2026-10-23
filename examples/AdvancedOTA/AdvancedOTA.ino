@@ -12,6 +12,7 @@
 //   - setAutoReboot(false): the application decides when to restart, and
 //     uses rebootForUpdate() to emit the "reboot" event before restarting.
 //   - lastOfferedVersion(): read the version label from the check() offer.
+//   - onEvent(): download progress, failure reasons and trial outcomes.
 //   - Verbose logging via SimpleOTAClient::setDebug(true).
 
 #include <WiFi.h>
@@ -49,11 +50,29 @@ static void connectWiFi() {
     Serial.printf("\n[app] Wi-Fi up: %s\n", WiFi.localIP().toString().c_str());
 }
 
+// Runs on the task that drives the update; keep it short.
+static void onOtaEvent(const OTAEventInfo& e) {
+    switch (e.id) {
+    case OTA_EVENT_DOWNLOAD_PROGRESS:
+        Serial.printf("[app] downloaded %u of %u bytes\n", (unsigned)e.bytesDone, (unsigned)e.bytesTotal);
+        break;
+    case OTA_EVENT_UPDATE_FAILED:
+        Serial.printf("[app] update %u failed: %s\n", (unsigned)e.buildNumber, e.reason ? e.reason : "?");
+        break;
+    case OTA_EVENT_ROLLING_BACK:
+        Serial.printf("[app] trial failed (%s), rolling back\n", e.reason ? e.reason : "?");
+        break;
+    default:
+        break;
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     Serial.println(FIRMWARE_VERSION);
     delay(200);
     SimpleOTAClient::setDebug(true);   // verbose [SimpleOTAClient] logs on Serial
+    ota.onEvent(onOtaEvent);
     connectWiFi();
 
     // Confirm a prior trial install (no-op if not in trial). Call this as

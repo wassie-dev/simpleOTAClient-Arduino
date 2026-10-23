@@ -2,6 +2,10 @@
 
 ## 1.0.0
 
+### Added
+
+- `onEvent()`: lifecycle events with download progress, failure reasons and the trial's outcome, the same events the ESP-IDF client's `event_cb` gets.
+
 ### Changed
 
 - The update logic is now the shared SimpleOTAClient-core, copied into `src/sota_core`, so the protocol, the trial record in NVS and the rollback rules are the ESP-IDF client's. The public API is unchanged, and so is the NVS layout.

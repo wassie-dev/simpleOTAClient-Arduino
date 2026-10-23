@@ -63,8 +63,15 @@ void sota_app_log(int level, const char* fmt, ...) {
 // The core's application interface
 // ---------------------------------------------------------------------------
 
-// Events are not part of this API; check() and apply() return what they mean.
-void sota_app_event(void*, const sota_event_t*) {}
+static_assert(OTA_EVENT_ROLLING_BACK == (int)SOTA_EVENT_ROLLING_BACK, "OTAEvent follows sota_event_id_t");
+
+void sota_app_event(void* user, const sota_event_t* event) {
+    SimpleOTAClient* self = static_cast<SimpleOTAClient*>(user);
+    if (!self->_onEvent) return;
+    const OTAEventInfo info = {static_cast<OTAEvent>(event->id), event->reason, event->build,
+                               event->done, event->total};
+    self->_onEvent(info);
+}
 
 // The confirm timeout ran out, in the esp_timer task: the runner rolls back
 // on its task, or on a short-lived one in polling mode.
@@ -140,6 +147,7 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _download(nullptr),
       _runner(),
       _onResult(nullptr),
+      _onEvent(nullptr),
       _isConnected(nullptr) {
     if (!deviceId) {
         sota_sys_default_device_id(_deviceIdBuf);
@@ -178,6 +186,7 @@ bool SimpleOTAClient::setServerUrl(const char* url) {
     return true;
 }
 
+void SimpleOTAClient::onEvent(void (*callback)(const OTAEventInfo&)) { _onEvent = callback; }
 void SimpleOTAClient::setCACert(const char* pemRootCA)        { _caCert = pemRootCA; }
 void SimpleOTAClient::setAutoReboot(bool enabled)             { _engine.cfg.auto_reboot = enabled; }
 void SimpleOTAClient::setPartitionProfile(const char* profile){ _engine.cfg.device.partition_profile = profile; }

@@ -177,9 +177,9 @@ SimpleOTA assigns its own **strictly monotonic build number** each time you uplo
 
 ## API reference
 
-The **[API reference](https://wassie-dev.github.io/simpleotaclient-core/)** documents every function, result, event and configuration field. It is generated from [`src/simpleota.h`](src/simpleota.h), which has the same comments. In short:
+The **[API reference](https://wassie-dev.github.io/simpleotaclient-core/latest/)** documents every function, result, event and configuration field. It is generated from [`src/simpleota.h`](src/simpleota.h), which has the same comments. In short:
 
-- Fill a [`simpleota_config_t`](https://wassie-dev.github.io/simpleotaclient-core/structsimpleota__config__t.html) from `{}` and call `simpleota_init()` early in `setup()`. Strings are copied. On Arduino, `chip_family` defaults to the chip the sketch is built for, and TLS is verified against the ISRG Root X1 and X2 certificates unless you set `cert_pem`.
+- Fill a [`simpleota_config_t`](https://wassie-dev.github.io/simpleotaclient-core/latest/structsimpleota__config__t.html) from `{}` and call `simpleota_init()` early in `setup()`. Strings are copied. On Arduino, `chip_family` defaults to the chip the sketch is built for, and TLS is verified against the ISRG Root X1 and X2 certificates unless you set `cert_pem`.
 - Managed mode: `simpleota_start()`, `simpleota_stop()`, `simpleota_check_now()`.
 - Polling mode: `simpleota_check()`, then `simpleota_apply()`, from one task of yours, such as `loop()`.
 - Trials: `simpleota_confirm()`, `simpleota_is_trial_boot()`.
@@ -450,7 +450,7 @@ A scheme works for SimpleOTA when its CSV defines both `ota_0` and `ota_1` (see 
 
 A normal Arduino IDE or arduino-cli USB sketch upload uses esptool to write the bootloader, `partitions.bin` at `0x8000`, `boot_app0.bin` at `0xe000`, and the app, so the selected partition scheme is applied. Network OTA, including a SimpleOTA update, writes only the app image, so the scheme cannot be changed over the air. If you are moving off a single-slot scheme, enable *Erase All Flash Before Sketch Upload* for that USB flash (PlatformIO: `pio run -t erase` first) so NVS and stored build numbers reset cleanly. Boards already on a two-slot layout do not need a full erase just to upload a new sketch.
 
-For mixed schemes in one fleet, set [`partition_profile`](https://wassie-dev.github.io/simpleotaclient-core/structsimpleota__config__t.html) to matching artifact profiles. A blank `partition_profile` on the artifact or on the device matches any value for that field only; `chip_family`, `board_id`, `framework` and `hardware_revision` still filter offers.
+For mixed schemes in one fleet, set [`partition_profile`](https://wassie-dev.github.io/simpleotaclient-core/latest/structsimpleota__config__t.html) to matching artifact profiles. A blank `partition_profile` on the artifact or on the device matches any value for that field only; `chip_family`, `board_id`, `framework` and `hardware_revision` still filter offers.
 
 ---
 

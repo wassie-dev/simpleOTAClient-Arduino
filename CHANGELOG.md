@@ -41,7 +41,7 @@ The `SimpleOTAClient` class is replaced by the C API of the ESP-IDF component, `
 - Server responses are read from their top-level fields only, and numbers too large for 32 bits are refused.
 - Labels that are not one JSON object are left out of the check-in with a warning, instead of making every check-in invalid.
 - The watchdog margin grows with `CONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS`, so a trial can finish its current request and roll back first. The trial's retry interval is fixed at 10 s.
-- About 9 KB less flash for BasicOTA (core 2.0.17, ESP32).
+- About 17 KB less flash for each example, and the same static RAM (core 2.0.17, ESP32).
 
 ## 0.6.0
 

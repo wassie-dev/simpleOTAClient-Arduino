@@ -516,7 +516,7 @@ For mixed schemes in one fleet, set [`partition_profile`](#configuration) to mat
 
 ## Footprint
 
-Built with Arduino-ESP32 2.0.17 for the ESP32, the library costs about 9 KB less flash than 0.6.0's C++ client did. The library uses `esp_http_client`, not `HTTPClient`, so a sketch that also uses `HTTPClient` links both HTTP stacks, about 23 KB more than it would with one. mbedTLS is shared.
+Built with Arduino-ESP32 2.0.17 for the ESP32, the examples take about 17 KB less flash than with 0.6.0, and the same static RAM. The library uses `esp_http_client`, not `HTTPClient`, so a sketch that also uses `HTTPClient` links both HTTP stacks, about 23 KB more than it would with one. mbedTLS is shared.
 
 ---
 

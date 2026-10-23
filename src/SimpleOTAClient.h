@@ -354,7 +354,8 @@ public:
      *
      * Such an image reports this build instead of the one stored for the
      * image before it. Without it (0, the default) it reports build 0, and
-     * the server offers it its current release. Call before check() or begin().
+     * the server offers it its current release. Call it before the first
+     * check(), apply(), confirm(), isTrialBoot() or begin().
      */
     void setImageBuild(uint32_t build);
 

@@ -2,38 +2,43 @@
 
 ## 1.0.0
 
+The update logic is now [SimpleOTAClient-core](https://github.com/wassie-dev/simpleOTAClient-core), shared with the ESP-IDF client and copied into `src/sota_core`. Both clients have the same features, defaults and behaviour, and the API follows the ESP-IDF client's; the README maps each call to its ESP-IDF counterpart.
+
+### Upgrading
+
+- **Devices update from 0.6.0 and earlier over the air**, mid-trial too. The NVS keys and their meanings are unchanged, and a trial that fails returns to the old release, which reads the rollback as it always has. 1.0.0 adds one key, `sota_image`, which older releases ignore.
+- **`begin()` no longer takes an `onResult` callback.** It is now `begin(checkIntervalSec, isConnected, initialDelayMs)`. Register `onEvent()` for outcomes: `OTA_EVENT_UPDATE_FAILED` carries the reason, `OTA_EVENT_CHECK_DONE` and `OTA_EVENT_UPDATE_AVAILABLE` the check.
+- **`report()` is gone.** The library posts every status event itself; for the `reboot` event of a deferred update, call `rebootForUpdate()`.
+- **`setRollbackEnabled()` is gone.** Every update runs as a trial and rolls back if it is not confirmed.
+- **TLS is always verified.** `setCACert(nullptr)` no longer turns verification off; it keeps the current CA and prints a warning. To test against a local server, give it a certificate from your own CA and pass that CA to `setCACert()`.
+- **Older builds are refused.** `apply()` returns the new `OTA_DOWNGRADE`, so a `switch` over `OTAResult` needs a case for it. To go back, release the old code under a new, higher build number.
+- **A sketch flashed over USB reports build 0**, so the server offers it its current release. Call `setImageBuild()` with the image's build to keep it. Before, it kept reporting the build SimpleOTA last installed.
+- `check()` and `apply()` refuse to run while `begin()`'s task runs, and `setServerUrl()` refuses until `end()`. Use polling or managed mode, not both.
+- Renamed, with the old names still compiling with a deprecation warning: `confirmRunning()` is `confirm()`, `isTrialInstall()` is `isTrialBoot()`, and `SIMPLEOTA_TIMEOUT_MS` is `SIMPLEOTA_HTTP_TIMEOUT_MS`.
+- `SIMPLEOTA_TRIAL_WDT_MARGIN_S` is gone: the watchdog margin follows `SIMPLEOTA_HTTP_TIMEOUT_MS`.
+- Warnings print on `Serial` without `setDebug(true)`.
+
 ### Added
 
-- `checkNow()` wakes the managed task for an immediate check, and `currentBuild()` returns the build the device reports, as on ESP-IDF.
-- A table in the README maps each call to its ESP-IDF counterpart.
 - `onEvent()`: lifecycle events with download progress, failure reasons and the trial's outcome, the same events the ESP-IDF client's `event_cb` gets.
+- `checkNow()` wakes the managed task for an immediate check, and `currentBuild()` returns the build the device reports.
+- Anti-rollback: an offer whose build number is not above the running build is refused, `apply()` returns `OTA_DOWNGRADE`, and the server gets `failed` with `downgrade_refused`. An old image's signature still verifies, so this stops an old, vulnerable build being pushed.
+- `setImageBuild()`: the build an image reports when it was flashed some other way than SimpleOTA, such as over USB. The running image's ELF SHA-256 is stored as `sota_image` to tell those images apart, so a device reused for another project no longer reports, and refuses offers below, the old project's build.
+- `chipFamily` is optional and defaults to the chip the sketch is built for.
 
 ### Changed
 
-- **Breaking:** anti-rollback. An offer whose build number is not above the running build is refused, `apply()` returns the new `OTA_DOWNGRADE`, and the server gets `failed` with `downgrade_refused`. An old image's signature still verifies, so this stops an old, vulnerable build being pushed. To go back, release the old code under a new, higher build number.
-- An image flashed some other way than SimpleOTA, such as over serial, reports build 0 instead of the build stored for the image before it, so a device reused for another project is not stuck refusing that project's builds. The running image's ELF SHA-256 is stored as `sota_image` to tell them apart. Release firmware can declare its own build with `setImageBuild()`, so a USB-flashed release reports it and the server does not replace it.
-- **Breaking:** the API matches the ESP-IDF client's:
-  - `begin(interval, isConnected, initialDelayMs)` takes no `onResult` callback; use `onEvent()`.
-  - `report()` is gone: the library posts every status event itself, and a hand-made one could contradict the device's state.
-  - `setRollbackEnabled()` is gone: every update runs as a trial and rolls back if it fails.
-  - `confirmRunning()` is now `confirm()`, `isTrialInstall()` is `isTrialBoot()` and `SIMPLEOTA_TIMEOUT_MS` is `SIMPLEOTA_HTTP_TIMEOUT_MS`. The old names still compile, with a deprecation warning.
-  - `chipFamily` is optional and defaults to the chip the sketch is built for.
-  - `check()` and `apply()` refuse to run while `begin()`'s task runs, and `setServerUrl()` refuses until `end()`, each with a warning.
-- **Breaking:** TLS is always verified. `setCACert(nullptr)` no longer turns verification off: it keeps the current CA and prints a warning. For a local server, pass your own CA to `setCACert()`. The ESP-IDF client never had an insecure mode.
-- The update logic is now the shared SimpleOTAClient-core, copied into `src/sota_core`, so the protocol, the trial record in NVS and the rollback rules are the ESP-IDF client's. The public API is unchanged, and so is the NVS layout.
-- About 9 KB less flash for the examples (core 2.0.17, ESP32).
-- With `-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK`, the chip watchdog still runs, and the library rolls back a trial itself, as the bootloader would: on any reset before `confirmRunning()` (a crash, a watchdog, a brownout, a power loss, `ESP.restart()` or deep sleep). A rollback cut short by a power loss is finished on the next boot.
+- With `-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK`, the chip watchdog still runs, and the library rolls back a trial itself, as the bootloader would: on any reset before `confirm()` (a crash, a watchdog, a brownout, a power loss, `ESP.restart()` or deep sleep). A rollback cut short by a power loss is finished on the next boot.
+- A trial that boots after a panic or watchdog reset is rolled back, also when the bootloader resumed it.
 - `end()` lets the managed task finish its current step instead of deleting it mid-download, which could cut a flash write short or leak its TLS session.
 - One `SimpleOTAClient` runs at a time: a second instance does nothing, and its `check()` and `begin()` print why. The class cannot be copied, and its destructor stops the managed task.
+- In polling mode, the confirm timeout rolls back from a short-lived task.
+- Firmware downloads follow up to three redirects, each only to another `https://` URL (`redirect_not_https` otherwise).
 - The update slot is erased as the download is written, not all at once before it, and an image larger than the slot is refused before the download.
 - Server responses are read from their top-level fields only, and numbers too large for 32 bits are refused.
-- A trial that boots after a panic or watchdog reset is rolled back, also when the bootloader resumed it.
-- The watchdog margin grows with `SIMPLEOTA_TIMEOUT_MS`, so a trial can finish its current request and roll back first. `SIMPLEOTA_TRIAL_WDT_MARGIN_S` is gone, and `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` is fixed at 10 s.
-- Firmware downloads follow up to three redirects, each only to another `https://` URL (`redirect_not_https` otherwise).
 - Labels that are not one JSON object are left out of the check-in with a warning, instead of making every check-in invalid.
-- `report()` returns `true` on any HTTP 2xx, without reading `"accepted"`.
-- Warnings print on `Serial` without `setDebug(true)`.
-- `setRollbackEnabled(false)` also accepts an image that boots on trial from an earlier `apply()`.
+- The watchdog margin grows with `SIMPLEOTA_HTTP_TIMEOUT_MS`, so a trial can finish its current request and roll back first. `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` is fixed at 10 s.
+- About 7 KB less flash for the examples (core 2.0.17, ESP32).
 
 ## 0.6.0
 

@@ -45,6 +45,7 @@ Starting a new project? [simpleOTA-starter-arduino](https://github.com/wassie-de
 - [Limitations](#limitations)
 - [Troubleshooting](#troubleshooting)
 - [Arduino and ESP-IDF](#arduino-and-esp-idf)
+- [Upgrading from 0.x](#upgrading-from-0x)
 - [License](#license)
 
 ---
@@ -159,13 +160,15 @@ void loop() {
 }
 ```
 
-Three runnable examples are bundled:
+Five runnable examples are bundled:
 
 | Example | What it shows |
 | --- | --- |
-| [`examples/BasicOTA/BasicOTA.ino`](examples/BasicOTA/BasicOTA.ino) | Minimal polling integration: Wi-Fi up, `check()` + `apply()` from `loop()`. Start here. |
+| [`examples/BasicOTA/BasicOTA.ino`](examples/BasicOTA/BasicOTA.ino) | Minimal polling integration: Wi-Fi up, `confirm()`, then `check()` + `apply()` from `loop()`. Start here. |
 | [`examples/ManagedOTA/ManagedOTA.ino`](examples/ManagedOTA/ManagedOTA.ino) | Hands-off managed mode using `begin()` with an `isConnected` probe and `onEvent()`. |
-| [`examples/AdvancedOTA/AdvancedOTA.ino`](examples/AdvancedOTA/AdvancedOTA.ino) | Custom `deviceId` / `boardId` / `hardwareRevision`, `setAutoReboot(false)` with `rebootForUpdate()` for the application-driven restart, verbose logging. |
+| [`examples/RollbackOTA/RollbackOTA.ino`](examples/RollbackOTA/RollbackOTA.ino) | Managed mode that confirms a trial only after its own health check, with `setManagedAutoConfirm(false)` and `setConfirmTimeout()`. |
+| [`examples/SignedOTA/SignedOTA.ino`](examples/SignedOTA/SignedOTA.ino) | Signed firmware: `setSecurityMode(SECURITY_MODE_SIGNED)` and a pinned key. |
+| [`examples/AdvancedOTA/AdvancedOTA.ino`](examples/AdvancedOTA/AdvancedOTA.ino) | Custom `deviceId` / `boardId` / `hardwareRevision`, `setImageBuild()`, `setAutoReboot(false)` with `rebootForUpdate()` for the application-driven restart, every `OTAResult`, verbose logging. |
 
 ---
 
@@ -181,7 +184,7 @@ SimpleOTA assigns its own **strictly monotonic build number** each time you uplo
 | After a successful `apply()` | Library writes the build number from the check response into NVS (`simpleota` / `sota_build`, uint32) |
 | With `setAutoReboot(false)`, while the update waits for `rebootForUpdate()` | `sota_build` already holds the flashed build and `check()` sends it, so the server does not offer that build again before the reboot |
 | Every subsequent `check()` | Library reads `sota_build` from NVS and sends it |
-| Firmware installed another way (USB, ArduinoOTA, or the `Update` class directly) | `sota_build` does not change: the library keeps sending the last build it installed itself, or 0 if it has not installed one |
+| Firmware installed another way (USB, ArduinoOTA, or the `Update` class directly) | The library sees the image changed without an update of its own and sends the build given to [`setImageBuild()`](#void-setimagebuilduint32_t-build), or 0. With 0 the server offers the device its current release |
 
 **Do not write to the `simpleota`/`sota_build` NVS key from your own code.** Overwriting it with any value other than one the server gave you will break the server's comparison: the device will either never receive another update, or be offered a build it already has.
 
@@ -199,7 +202,7 @@ SimpleOTAClient(const char* token,
           const char* hardwareRevision = nullptr);
 ```
 
-> **Note:** `deviceId` must point to a buffer that outlives the `SimpleOTAClient` object. A `static char` array formatted in `setup()` (see [Quick start](#quick-start)) is the standard pattern.
+> **Note:** `deviceId` must point to a buffer that outlives the `SimpleOTAClient` object. A string literal or a `static` buffer is the standard pattern; see `examples/AdvancedOTA`.
 
 | Parameter | Description |
 | --- | --- |
@@ -240,7 +243,7 @@ Executes the offer stored by the most recent successful `check()`.
 | `OTA_DOWNGRADE` | The offered build number is not above the running one. Nothing was downloaded, and a `failed` event with reason `downgrade_refused` was reported. See [Security](#security). |
 | `OTA_REBOOT_PENDING` | With `setAutoReboot(false)`, an earlier `apply()` flashed an update that is waiting for its reboot. Nothing was downloaded or reported, because the next update slot holds the waiting image. Call `rebootForUpdate()` to install it. |
 
-> **Note on `validated`:** this event is reported after `Update.end()` succeeds (meaning "the image was flashed cleanly"), not after a successful boot. A subsequent `reboot` event is emitted immediately before `esp_restart()` on the auto-reboot path; a `confirmed` event follows once the trial is confirmed (see [Rollback](#rollback)).
+> **Note on `validated`:** this event is reported once the flashed image passes ESP-IDF's image check (meaning "the image was flashed cleanly"), not after a successful boot. A subsequent `reboot` event is emitted immediately before `esp_restart()` on the auto-reboot path; a `confirmed` event follows once the trial is confirmed (see [Rollback](#rollback)).
 
 ---
 
@@ -309,7 +312,7 @@ Default: `1`. Increment this when you restructure your own NVS namespace layout 
 
 ### `void setLabels(const char* jsonObject)`
 
-Arbitrary key/value metadata sent to the server for deployment targeting. Must be a valid JSON object literal string, e.g. `"{\"site\":\"factory-A\"}"`. The string is embedded verbatim in the request body; no escaping or validation is performed by the library. Pass `nullptr` (default) to omit the field.
+Arbitrary key/value metadata sent to the server for deployment targeting. Must be a valid JSON object literal string, e.g. `"{\"site\":\"factory-A\"}"`. The string is embedded verbatim in the request body. A string that is not one JSON object is left out of the check-in with a warning, so a typo cannot break every check-in. Pass `nullptr` (default) to omit the field.
 
 ---
 
@@ -353,7 +356,7 @@ When `nullptr` (default), the library automatically reads the value persisted in
 
 ### `void setImageBuild(uint32_t build)`
 
-Declares the build number of this image, for when it is flashed some other way than SimpleOTA, such as over USB. Such an image reports this build instead of the one stored for the image before it. Without it (`0`, the default) it reports build 0 and the server offers it its current release, which is what a device reused for another project needs. Set it in release firmware you may also flash over USB, so the server does not replace it with an older release. Call before `check()` or `begin()`.
+Declares the build number of this image, for when it is flashed some other way than SimpleOTA, such as over USB. Such an image reports this build instead of the one stored for the image before it. Without it (`0`, the default) it reports build 0 and the server offers it its current release, which is what a device reused for another project needs. Set it in release firmware you may also flash over USB, so the server does not replace it with an older release. The number must be the one SimpleOTA gives this image, so set it only when you know that number before you build. An image installed by SimpleOTA always reports the build it was installed as, whatever this says. Call it before the first `check()`, `apply()`, `confirm()`, `isTrialBoot()` or `begin()`, which work out what this boot is.
 
 ---
 
@@ -469,7 +472,7 @@ On failure at any stage, a `failed` event is reported with a short reason token 
 | `http_status_<N>` | Server returned non-200 for the firmware GET, or a fourth redirect |
 | `redirect_not_https` | A download redirect led to a plain HTTP URL |
 | `redirect_malformed` | A download redirect had no usable `Location` |
-| `update_begin_failed` | `Update.begin()` failed, likely a partition issue |
+| `update_begin_failed` | The update slot could not be opened: no second OTA slot, or the image is larger than the slot |
 | `update_write_failed` | Flash write error during streaming |
 | `stream_error` | Socket error mid-download |
 | `download_stalled` | No bytes received within `SIMPLEOTA_HTTP_TIMEOUT_MS` |
@@ -477,9 +480,9 @@ On failure at any stage, a `failed` event is reported with a short reason token 
 | `checksum_mismatch` | SHA-256 of received bytes did not match server's value |
 | `signature_invalid` | Signed artifact failed Ed25519 verification, or no key is pinned; see [Signed firmware](#signed-firmware) |
 | `state_save_failed` | The trial record could not be saved to NVS before the slot switch |
-| `update_end_failed` | `Update.end()` failed after streaming completed |
+| `update_end_failed` | The flashed image failed ESP-IDF's image check, or the boot slot could not be switched |
 
-If [rollback](#rollback) is enabled and a trial install crashes, hangs, or is not confirmed within the timeout, the device returns to the previous partition and queues a separate `rolled_back` event, sent by the next `check()`. Its reason says what ended the trial; see [Server interaction](#server-interaction).
+If a trial install crashes, hangs, or is not confirmed within the timeout, the device returns to the previous partition and queues a separate `rolled_back` event, sent by the next `check()`. Its reason says what ended the trial; see [Server interaction](#server-interaction).
 
 ---
 
@@ -520,7 +523,7 @@ ota.setSigningPublicKey(
     "-----END PUBLIC KEY-----\n");
 ```
 
-The signature (delivered in the `/check/` response for signed artifacts) is verified incrementally over the exact downloaded bytes, in the same streaming pass as the SHA-256 checksum, **before** `Update.end()` marks the new image bootable. No extra RAM buffer, no second pass over flash.
+The signature (delivered in the `/check/` response for signed artifacts) is verified incrementally over the exact downloaded bytes, in the same streaming pass as the SHA-256 checksum, **before** the new image is marked bootable. No extra RAM buffer, no second pass over flash.
 
 A device is **enforcing** once it both reports signed mode
 (`setSecurityMode(SECURITY_MODE_SIGNED)`) and has a key pinned. For an
@@ -638,7 +641,7 @@ Before relying on rollback in the field, try each way a trial can fail on one de
 | Loses power before `confirm()` | Back on the known-good build; `rolled_back` with `power_on` |
 | Loses power during the download | Stays on the known-good build and downloads the update again on a later check |
 
-Keep the confirm time short while testing, for example `setConfirmTimeout(60)`, and turn on [logging](#logging) to see each boot classified. Run the table once on a device that still has 0.4.0, so the first update into this release is covered too. If your devices use deep sleep, also deep-sleep a test build before it confirms: it should wake on the known-good build, with `rolled_back` and `deep_sleep`.
+Keep the confirm time short while testing, for example `setConfirmTimeout(60)`, and turn on [logging](#logging) to see each boot classified. Run the table once on a device that still has 0.6.0, so the first update into this release, and a rollback to 0.6.0, are covered too. If your devices use deep sleep, also deep-sleep a test build before it confirms: it should wake on the known-good build, with `rolled_back` and `deep_sleep`.
 
 ---
 
@@ -681,7 +684,7 @@ Warnings, such as a rejected token, always print on `Serial`, regardless of this
 
 ## Partition table
 
-A scheme works for SimpleOTA when its CSV defines both `ota_0` and `ota_1` (see `tools/partitions/` in [Arduino-ESP32 3.3.12](https://github.com/espressif/arduino-esp32/tree/3.3.12/tools/partitions)). Choose the Partition Scheme entry in the Tools menu, or set `board_build.partitions`. On 4 MB boards, common choices include *Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS)* (`default.csv`, 1280 KB per slot), *Default 4MB with ffat (1.2MB APP/1.5MB FATFS)* (`default_ffat.csv`, 1280 KB), and *Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)* (`min_spiffs.csv`, 1920 KB; some boards label this *Minimal SPIFFS (Large APPS with OTA)*). *Huge APP*, *Minimal (1.3MB APP/700KB SPIFFS)* and the plain *No OTA* entries have one app slot, so `Update.begin()` fails and `apply()` reports `update_begin_failed`.
+A scheme works for SimpleOTA when its CSV defines both `ota_0` and `ota_1` (see `tools/partitions/` in [Arduino-ESP32 3.3.12](https://github.com/espressif/arduino-esp32/tree/3.3.12/tools/partitions)). Choose the Partition Scheme entry in the Tools menu, or set `board_build.partitions`. On 4 MB boards, common choices include *Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS)* (`default.csv`, 1280 KB per slot), *Default 4MB with ffat (1.2MB APP/1.5MB FATFS)* (`default_ffat.csv`, 1280 KB), and *Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)* (`min_spiffs.csv`, 1920 KB; some boards label this *Minimal SPIFFS (Large APPS with OTA)*). *Huge APP*, *Minimal (1.3MB APP/700KB SPIFFS)* and the plain *No OTA* entries have one app slot, so `apply()` reports `update_begin_failed`.
 
 ### Changing the scheme
 
@@ -720,9 +723,11 @@ The figures below come from building examples/SignedOTA with arduino-cli 1.5.1 a
 | Symptom | Likely cause |
 | --- | --- |
 | `check()` always returns `false` | Bad token, or no active deployment targeting this device. Enable `SIMPLEOTA_DEBUG` and check the HTTP response code in the logs. |
-| `Update.begin failed` | Partition table has no OTA slot, or the OTA partition is too small for the firmware being applied. |
+| `update_begin_failed` | Partition table has no second OTA slot, or the OTA slot is too small for the firmware being applied. |
 | `OTA_CHECKSUM_FAIL` | The firmware object was replaced or corrupted on the server between the `/check/` response and the download. |
 | Device is offered the same build repeatedly | The `simpleota`/`sota_build` NVS key was cleared or overwritten. See [Build numbers](#build-numbers). A `current_build_number` of `0` always matches a pending deployment, so a wiped NVS will keep re-offering the same build. |
+| A sketch flashed over USB is replaced by the server's release | The device reports build 0 for an image SimpleOTA did not install. Pass the image's build to [`setImageBuild()`](#void-setimagebuilduint32_t-build). |
+| `apply()` returns `OTA_DOWNGRADE` | The server offered a build that is not above the one the device runs. To go back, upload the old code again as a new build. |
 | Download stalls or times out | Weak Wi-Fi signal, or `SIMPLEOTA_HTTP_TIMEOUT_MS` is too short for the link speed and firmware size. Increase the timeout or improve signal quality. |
 | `[SimpleOTAClient] WARNING: setCACert: TLS is always verified; keeping the current CA` | `setCACert(nullptr)` was called. Verification can't be turned off. See [Security](#security). |
 
@@ -751,6 +756,22 @@ The [Arduino](https://github.com/xanderwasserman/SimpleOTAClient-Arduino) and [E
 | Build of a USB-flashed image | `setImageBuild(build)` | `config.image_build` |
 | Logging | `setDebug(true)` | `esp_log_level_set("simpleota", ...)` |
 | HTTP timeout | `-DSIMPLEOTA_HTTP_TIMEOUT_MS` | `CONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS` |
+
+---
+
+## Upgrading from 0.x
+
+Devices update from 0.6.0 and earlier over the air, also in the middle of a trial: the NVS layout is unchanged, and a trial that fails returns to the old release. Sketches need these changes:
+
+- `begin(interval, onResult)` no longer compiles: `begin()` now takes `(checkIntervalSec, isConnected, initialDelayMs)`. Register [`onEvent()`](#void-oneventvoid-callbackconst-otaeventinfo-event) for outcomes.
+- `report()` and `setRollbackEnabled()` are gone. The library posts every status event itself (use `rebootForUpdate()` for a deferred reboot), and every update runs as a trial.
+- `setCACert(nullptr)` no longer turns TLS verification off. For a local server, pass your own CA.
+- `apply()` can return `OTA_DOWNGRADE`; add it to any `switch` over `OTAResult`.
+- `check()` and `apply()` don't run while `begin()`'s task runs.
+- A sketch flashed over USB reports build 0 unless it calls [`setImageBuild()`](#void-setimagebuilduint32_t-build).
+- `confirmRunning()`, `isTrialInstall()` and `SIMPLEOTA_TIMEOUT_MS` still compile, with a deprecation warning: use `confirm()`, `isTrialBoot()` and `SIMPLEOTA_HTTP_TIMEOUT_MS`.
+
+The [CHANGELOG](CHANGELOG.md) lists every change.
 
 ---
 

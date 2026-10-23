@@ -24,7 +24,7 @@ static const char* SOTA_TOKEN = "soto_proj_xxxx";   // project or device token
 #define FIRMWARE_VERSION "1.0.0"
 
 // Device ID auto-derived from the Wi-Fi MAC address. No setup needed.
-SimpleOTAClient ota(SOTA_TOKEN, SimpleOTAClient::CHIP_ESP32);
+SimpleOTAClient ota(SOTA_TOKEN);   // chip family: the one this sketch is built for
 
 static void connectWiFi() {
     WiFi.mode(WIFI_STA);
@@ -64,7 +64,7 @@ void loop() {
     // exchanged with your service, etc.). Polling-mode users MUST call this
     // explicitly or every OTA will roll back after SIMPLEOTA_CONFIRM_TIMEOUT_S
     // (default 300s). It is a no-op when no trial is in progress.
-    ota.confirmRunning();
+    ota.confirm();
 
     if (ota.check()) {
         OTAResult r = ota.apply();   // reboots on success by default

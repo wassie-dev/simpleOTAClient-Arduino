@@ -34,7 +34,7 @@ static const char* BOARD_ID         = "acme-widget-v2";
 static const char* HARDWARE_REV     = "C";
 
 SimpleOTAClient ota(SOTA_TOKEN,
-                    SimpleOTAClient::CHIP_ESP32,
+                    nullptr,   // chip family: the one this sketch is built for
                     DEVICE_ID,
                     BOARD_ID,
                     HARDWARE_REV);
@@ -79,7 +79,7 @@ void setup() {
     // early as your application can prove it is healthy. Here we do it
     // right after Wi-Fi succeeds; production firmware would gate it on
     // an end-to-end health probe (e.g., MQTT round-trip).
-    ota.confirmRunning();
+    ota.confirm();
 
     // Tell the server which partition layout this device uses.
     // Match the scheme you selected under Tools -> Partition Scheme.

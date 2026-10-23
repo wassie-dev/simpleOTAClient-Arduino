@@ -15,7 +15,7 @@
 #include "sota_core/sota_wdt_calc.h"
 
 // Bootloader rollback: the core can leave a new image pending verify, so a
-// crash or reset before confirmRunning() returns to the previous image.
+// crash or reset before confirm() returns to the previous image.
 // -DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK leaves the rollback to the library.
 #if (defined(CONFIG_APP_ROLLBACK_ENABLE) || defined(CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE)) \
     && !defined(SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK)
@@ -145,7 +145,6 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _managedAutoConfirm(true),
       _download(nullptr),
       _runner(),
-      _onResult(nullptr),
       _onEvent(nullptr),
       _isConnected(nullptr) {
     if (!deviceId) {
@@ -156,13 +155,13 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
     cfg.token = token;
     cfg.device.device_id = deviceId;
     cfg.device.framework = "arduino";
-    cfg.device.chip_family = chipFamily;
+    cfg.device.chip_family = chipFamily ? chipFamily : CONFIG_IDF_TARGET;
     cfg.device.board_id = boardId;
     cfg.device.hardware_revision = hardwareRevision;
     cfg.device.nvs_schema_version = 1;
     cfg.check_interval_s = SIMPLEOTA_CHECK_INTERVAL_S;
     cfg.confirm_timeout_s = SIMPLEOTA_CONFIRM_TIMEOUT_S;
-    cfg.http_timeout_ms = SIMPLEOTA_TIMEOUT_MS;
+    cfg.http_timeout_ms = SIMPLEOTA_HTTP_TIMEOUT_MS;
     cfg.auto_reboot = true;
     cfg.rollback = true;
     cfg.user = this;
@@ -175,6 +174,10 @@ SimpleOTAClient::~SimpleOTAClient() {
 }
 
 bool SimpleOTAClient::setServerUrl(const char* url) {
+    if (_runner.task) {
+        SOTA_LOGW("setServerUrl: the managed task is running; call end() first");
+        return false;
+    }
     const sota_url_status_t status = sota_validate_server_url(url);
     if (status != SOTA_URL_OK) {
         Serial.printf("[SimpleOTAClient] setServerUrl rejected (%s). Keeping %s\n",
@@ -222,7 +225,6 @@ bool SimpleOTAClient::addSigningPublicKey(const char* keyId, const char* pem) {
 void SimpleOTAClient::setVersionLabel(const char* label)      { _engine.cfg.version_label = label; }
 void SimpleOTAClient::setChannel(const char* channel)         { _engine.cfg.device.channel = channel; }
 void SimpleOTAClient::setDebug(bool enabled)                  { _debugEnabled = enabled; }
-void SimpleOTAClient::setRollbackEnabled(bool enabled)        { _engine.cfg.rollback = enabled; }
 
 void SimpleOTAClient::setManagedAutoConfirm(bool enabled) {
     _managedAutoConfirm = enabled;
@@ -238,6 +240,7 @@ void SimpleOTAClient::setConfirmTimeout(uint32_t seconds) {
 }
 
 const char* SimpleOTAClient::lastOfferedVersion() const { return _engine.offer.version; }
+uint32_t SimpleOTAClient::currentBuild() const { return _engine.st.live.build; }
 
 // Construction runs before Serial is up, so a refused set-up is reported here.
 bool SimpleOTAClient::setUp(const char* caller) {
@@ -252,18 +255,22 @@ bool SimpleOTAClient::setUp(const char* caller) {
 // Polling API
 // ---------------------------------------------------------------------------
 
+// Polling mode belongs to the sketch's task; the managed task owns the
+// engine while it runs.
+bool SimpleOTAClient::polling(const char* caller) {
+    if (!setUp(caller)) return false;
+    if (!_runner.task) return true;
+    SOTA_LOGW("%s: the managed task is running; call end() first", caller);
+    return false;
+}
+
 bool SimpleOTAClient::check() {
-    if (!setUp("check")) return false;
-    return sota_engine_check(&_engine);
+    return polling("check") && sota_engine_check(&_engine);
 }
 
 OTAResult SimpleOTAClient::apply() {
+    if (!polling("apply")) return OTA_NO_OFFER;
     return static_cast<OTAResult>(sota_engine_apply(&_engine));
-}
-
-bool SimpleOTAClient::report(const char* event, const char* reason) {
-    const int status = sota_engine_report(&_engine, event, reason);
-    return status >= 200 && status < 300;
 }
 
 // The event names the waiting update's deployment, kept in NVS by apply().
@@ -273,12 +280,12 @@ void SimpleOTAClient::rebootForUpdate() {
     esp_restart();
 }
 
-bool SimpleOTAClient::confirmRunning() {
+bool SimpleOTAClient::confirm() {
     sota_engine_validate_boot(&_engine);
     return sota_engine_confirm(&_engine) == SOTA_CONFIRM_DONE;
 }
 
-bool SimpleOTAClient::isTrialInstall() {
+bool SimpleOTAClient::isTrialBoot() {
     sota_engine_validate_boot(&_engine);
     return _engine.in_trial;
 }
@@ -288,18 +295,15 @@ bool SimpleOTAClient::isTrialInstall() {
 // ---------------------------------------------------------------------------
 
 void SimpleOTAClient::begin(uint32_t checkIntervalSec,
-                      void (*onResult)(OTAResult),
                       bool (*isConnected)(),
                       uint32_t initialDelayMs) {
     if (_runner.task != nullptr || !setUp("begin")) return;
     _engine.cfg.check_interval_s = checkIntervalSec ? checkIntervalSec : SIMPLEOTA_CHECK_INTERVAL_S;
     _engine.cfg.auto_confirm = _managedAutoConfirm;
-    _onResult = onResult;
     _isConnected = isConnected;
     _runner.engine = &_engine;
     _runner.initial_delay_ms = initialDelayMs;
     _runner.is_connected = connectedFor;
-    _runner.on_result = resultFor;
     _runner.ctx = this;
     _runner.stack_size = 8192;
     _runner.priority = 1;
@@ -324,9 +328,10 @@ bool SimpleOTAClient::connectedFor(void* self) {
     return !client->_isConnected || client->_isConnected();
 }
 
-void SimpleOTAClient::resultFor(sota_apply_result_t result, void* self) {
-    auto* client = static_cast<SimpleOTAClient*>(self);
-    if (client->_onResult) client->_onResult(static_cast<OTAResult>(result));
+bool SimpleOTAClient::checkNow() {
+    if (_runner.task == nullptr) return false;
+    sota_runner_wake(&_runner);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +352,7 @@ extern "C" bool verifyRollbackLater() {
     // the sketch reaches the library is reset too. setConfirmTimeout() is
     // not known yet: the compile-time default applies until boot validation.
     if (hold) {
-        sota_sys_wdt_arm(SIMPLEOTA_CONFIRM_TIMEOUT_S, sota_wdt_floor_sec(SIMPLEOTA_TIMEOUT_MS));
+        sota_sys_wdt_arm(SIMPLEOTA_CONFIRM_TIMEOUT_S, sota_wdt_floor_sec(SIMPLEOTA_HTTP_TIMEOUT_MS));
     } else {
         sota_sys_wdt_quiesce();
     }

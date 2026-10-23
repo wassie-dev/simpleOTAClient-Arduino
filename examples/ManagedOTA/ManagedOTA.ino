@@ -23,7 +23,7 @@ static const char* SOTA_TOKEN = "soto_proj_xxxx";   // project or device token
 // declaring it here makes the firmware itself the authoritative source.
 #define FIRMWARE_VERSION "1.0.0"
 
-SimpleOTAClient ota(SOTA_TOKEN, SimpleOTAClient::CHIP_ESP32);
+SimpleOTAClient ota(SOTA_TOKEN);   // chip family: the one this sketch is built for
 
 // Probe used by the OTA task to gate each check on IP connectivity.
 // Polled once a second; the task only attempts a check while it returns true.
@@ -31,12 +31,10 @@ static bool wifiUp() {
     return WiFi.status() == WL_CONNECTED;
 }
 
-// Optional result callback. With setAutoReboot(true) (the default),
-// successful updates reboot before this fires, so in practice you'll only
-// see failures here.
-static void onOtaResult(OTAResult r) {
-    if (r != OTA_SUCCESS) {
-        Serial.printf("[app] OTA failed: %d\n", (int)r);
+// Optional event callback, on the OTA task: keep it short.
+static void onOtaEvent(const OTAEventInfo& e) {
+    if (e.id == OTA_EVENT_UPDATE_FAILED) {
+        Serial.printf("[app] OTA failed: %s\n", e.reason ? e.reason : "?");
     }
 }
 
@@ -58,14 +56,12 @@ void setup() {
     // auth are all working. If you want to gate confirmation on your own
     // application-level health check, call:
     //   ota.setManagedAutoConfirm(false);
-    // and call ota.confirmRunning() yourself once your app is healthy.
+    // and call ota.confirm() yourself once your app is healthy.
     // See examples/RollbackOTA for that pattern.
 
-    // Check every hour. The task waits for wifiUp() before each attempt
-    // and reports results to onOtaResult() (only fires for non-success
-    // outcomes given the default auto-reboot behaviour).
+    // Check every hour. The task waits for wifiUp() before each attempt.
+    ota.onEvent(onOtaEvent);
     ota.begin(/*checkIntervalSec*/ 3600,
-              /*onResult*/         onOtaResult,
               /*isConnected*/      wifiUp);
 }
 

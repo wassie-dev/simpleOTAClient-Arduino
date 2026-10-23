@@ -12,7 +12,7 @@
 //   - You ship to flaky transports (cellular) where the OTA check is the
 //     easiest part of bring-up.
 //
-// IMPORTANT: confirmRunning() MUST be called before the timeout expires, or
+// IMPORTANT: confirm() MUST be called before the timeout expires, or
 // the device will roll back. Don't gate it on something that may never happen.
 
 #include <WiFi.h>
@@ -25,7 +25,7 @@ static const char* SOTA_TOKEN = "soto_proj_xxxx";
 
 #define FIRMWARE_VERSION "1.0.0"
 
-SimpleOTAClient ota(SOTA_TOKEN, SimpleOTAClient::CHIP_ESP32);
+SimpleOTAClient ota(SOTA_TOKEN);   // chip family: the one this sketch is built for
 
 static bool wifiUp() { return WiFi.status() == WL_CONNECTED; }
 
@@ -50,29 +50,28 @@ void setup() {
     ota.setVersionLabel(FIRMWARE_VERSION);
 
     // Disable managed auto-confirm so the library waits for our explicit
-    // confirmRunning() call instead of confirming on the first successful /check/.
+    // confirm() call instead of confirming on the first successful /check/.
     ota.setManagedAutoConfirm(false);
 
-    // Give the application 120 seconds to call confirmRunning() after a
+    // Give the application 120 seconds to call confirm() after a
     // trial boot. Tune to the worst-case boot-to-healthy time of your
     // firmware (include OS init, transport bring-up, server handshake).
     // The default is 300 seconds; on cellular consider raising it further.
     ota.setConfirmTimeout(120);
 
     ota.begin(/*checkIntervalSec*/ 3600,
-              /*onResult*/         nullptr,
               /*isConnected*/      wifiUp);
 }
 
 void loop() {
-    // Run the application's health gate until the trial is confirmed. confirmRunning()
+    // Run the application's health gate until the trial is confirmed. confirm()
     // is a no-op when no trial is in progress, so calling it on a normal boot
-    // is harmless. ota.isTrialInstall() lets you skip the work entirely when
+    // is harmless. ota.isTrialBoot() lets you skip the work entirely when
     // there's nothing to confirm.
-    if (!confirmed && ota.isTrialInstall() && applicationHealthy()) {
-        // confirmRunning() returns false if the bootloader could not record
+    if (!confirmed && ota.isTrialBoot() && applicationHealthy()) {
+        // confirm() returns false if the bootloader could not record
         // the image as good. The trial carries on, so try again next time.
-        if (ota.confirmRunning()) {
+        if (ota.confirm()) {
             Serial.println("[app] trial confirmed");
             confirmed = true;
         }

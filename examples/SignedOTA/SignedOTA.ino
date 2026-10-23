@@ -42,20 +42,21 @@ static const char* SIGNING_PUBLIC_KEY_PEM =
     "_PASTE_YOUR_PROJECT_PUBLIC_KEY_BODY_HERE_\n"
     "-----END PUBLIC KEY-----\n";
 
-SimpleOTAClient ota(SOTA_TOKEN, SimpleOTAClient::CHIP_ESP32);
+SimpleOTAClient ota(SOTA_TOKEN);   // chip family: the one this sketch is built for
 
 static bool wifiUp() {
     return WiFi.status() == WL_CONNECTED;
 }
 
-static void onOtaResult(OTAResult r) {
-    if (r == OTA_SIGNATURE_FAIL) {
+static void onOtaEvent(const OTAEventInfo& e) {
+    if (e.id != OTA_EVENT_UPDATE_FAILED) return;
+    if (e.reason && strcmp(e.reason, "signature_invalid") == 0) {
         // The image downloaded intact but was NOT signed with your key.
         // Investigate before anything else: check the dashboard's device
-        // row (reason: signature_invalid) and your signing pipeline.
+        // row and your signing pipeline.
         Serial.println("[app] OTA rejected: firmware signature invalid!");
-    } else if (r != OTA_SUCCESS) {
-        Serial.printf("[app] OTA failed: %d\n", (int)r);
+    } else {
+        Serial.printf("[app] OTA failed: %s\n", e.reason ? e.reason : "?");
     }
 }
 
@@ -91,8 +92,8 @@ void setup() {
         }
     }
 
+    ota.onEvent(onOtaEvent);
     ota.begin(/*checkIntervalSec*/ 3600,
-              /*onResult*/         onOtaResult,
               /*isConnected*/      wifiUp);
 }
 

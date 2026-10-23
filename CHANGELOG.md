@@ -4,10 +4,19 @@
 
 ### Added
 
+- `checkNow()` wakes the managed task for an immediate check, and `currentBuild()` returns the build the device reports, as on ESP-IDF.
+- A table in the README maps each call to its ESP-IDF counterpart.
 - `onEvent()`: lifecycle events with download progress, failure reasons and the trial's outcome, the same events the ESP-IDF client's `event_cb` gets.
 
 ### Changed
 
+- **Breaking:** the API matches the ESP-IDF client's:
+  - `begin(interval, isConnected, initialDelayMs)` takes no `onResult` callback; use `onEvent()`.
+  - `report()` is gone: the library posts every status event itself, and a hand-made one could contradict the device's state.
+  - `setRollbackEnabled()` is gone: every update runs as a trial and rolls back if it fails.
+  - `confirmRunning()` is now `confirm()`, `isTrialInstall()` is `isTrialBoot()` and `SIMPLEOTA_TIMEOUT_MS` is `SIMPLEOTA_HTTP_TIMEOUT_MS`. The old names still compile, with a deprecation warning.
+  - `chipFamily` is optional and defaults to the chip the sketch is built for.
+  - `check()` and `apply()` refuse to run while `begin()`'s task runs, and `setServerUrl()` refuses until `end()`, each with a warning.
 - **Breaking:** TLS is always verified. `setCACert(nullptr)` no longer turns verification off: it keeps the current CA and prints a warning. For a local server, pass your own CA to `setCACert()`. The ESP-IDF client never had an insecure mode.
 - The update logic is now the shared SimpleOTAClient-core, copied into `src/sota_core`, so the protocol, the trial record in NVS and the rollback rules are the ESP-IDF client's. The public API is unchanged, and so is the NVS layout.
 - About 9 KB less flash for the examples (core 2.0.17, ESP32).

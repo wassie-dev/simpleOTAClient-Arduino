@@ -31,11 +31,17 @@
 #define SIMPLEOTA_CHECK_INTERVAL_S 3600
 #endif
 
-#ifndef SIMPLEOTA_TIMEOUT_MS
+#ifndef SIMPLEOTA_HTTP_TIMEOUT_MS
+#ifdef SIMPLEOTA_TIMEOUT_MS
+// The name before 1.0.0.
+#define SIMPLEOTA_HTTP_TIMEOUT_MS SIMPLEOTA_TIMEOUT_MS
+#else
 /**
- * @brief HTTP transport timeout in milliseconds for /check and /status requests.
+ * @brief HTTP timeout in milliseconds, as CONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS on
+ *        ESP-IDF.
  */
-#define SIMPLEOTA_TIMEOUT_MS 15000
+#define SIMPLEOTA_HTTP_TIMEOUT_MS 15000
+#endif
 #endif
 
 #ifndef SIMPLEOTA_DEBUG
@@ -50,7 +56,7 @@
 /**
  * @brief Default trial-install confirm deadline in seconds.
  *
- * After a successful apply(), the new firmware must call confirmRunning()
+ * After a successful apply(), the new firmware must call confirm()
  * within this many seconds, or the library reboots into the previous
  * partition. See setConfirmTimeout().
  */
@@ -80,7 +86,7 @@ enum OTAResult {
     OTA_NO_OFFER       = 3,  ///< apply() called without a successful preceding check().
     OTA_SIGNATURE_FAIL = 4,  ///< Ed25519 signature verification failed; image rejected before it was marked bootable.
     OTA_REBOOT_PENDING = 5,  ///< An update is flashed and waits for rebootForUpdate() (setAutoReboot(false)). Nothing was downloaded.
-    OTA_UNCONFIRMED    = 6   ///< The running image is on trial. Call confirmRunning(), then apply() again. The offer is kept.
+    OTA_UNCONFIRMED    = 6   ///< The running image is on trial. Call confirm(), then apply() again. The offer is kept.
 };
 
 /**
@@ -128,7 +134,8 @@ public:
      * @param token             Project or device token, sent as
      *                          "Authorization: Bearer <token>".
      * @param chipFamily        Chip family string, e.g. "esp32" or "esp32s3".
-     *                          Use the CHIP_xxx constants for IDE autocomplete.
+     *                          nullptr (default) = the chip this sketch is
+     *                          built for, as on ESP-IDF.
      * @param deviceId          Stable per-unit identifier. Pass nullptr (default)
      *                          to auto-derive from the Wi-Fi MAC address
      *                          ("aa:bb:cc:dd:ee:ff"). Supply your own string for
@@ -137,7 +144,7 @@ public:
      * @param hardwareRevision  Optional hardware revision. nullptr = field omitted.
      */
     SimpleOTAClient(const char* token,
-                    const char* chipFamily,
+                    const char* chipFamily       = nullptr,
                     const char* deviceId         = nullptr,
                     const char* boardId          = nullptr,
                     const char* hardwareRevision = nullptr);
@@ -155,6 +162,8 @@ public:
      * Stores the offer (url, checksum, size, deployment_id, build_number) on
      * the instance when one is available.
      *
+     * Polling mode only: false, with a warning, while begin()'s task runs.
+     *
      * @return true if an update is offered; false on no-update or transport failure.
      */
     bool check();
@@ -165,25 +174,13 @@ public:
      * Reports lifecycle events to /api/v1/ota/status/. On success, persists the
      * new build number in NVS and (by default) calls esp_restart().
      *
+     * Polling mode only: OTA_NO_OFFER, with a warning, while begin()'s task
+     * runs.
+     *
      * @return An OTAResult code. On OTA_SUCCESS with auto-reboot enabled
      *         (default), this function does not return.
      */
     OTAResult apply();
-
-    /**
-     * @brief Manually post a status event to /api/v1/ota/status/.
-     *
-     * Requires a deployment context populated by a successful check(). The
-     * context is retained through apply() for post-apply events (e.g.
-     * report("reboot") when auto-reboot is disabled), and is cleared on the
-     * next check() invocation.
-     *
-     * @param event   Event name string (e.g. "reboot").
-     * @param reason  Optional reason string. nullptr = field omitted.
-     * @return true on HTTP 2xx; false otherwise, or if no deployment
-     *         context is available.
-     */
-    bool report(const char* event, const char* reason = nullptr);
 
     /**
      * @brief Override the CA certificate (PEM) used for HTTPS verification.
@@ -203,10 +200,9 @@ public:
     /**
      * @brief Point check() and status posts at another SimpleOTA server.
      *
-     * Call before begin(), and before check() in polling mode. Not while a
-     * check or status post may be running: managed mode reads the pointer
-     * with no lock. The pointer is stored, not copied, and must outlive
-     * this object. Until a URL is accepted the base is https://simpleota.com.
+     * Call before begin(), or after end(): while the managed task runs it
+     * returns false with a warning. The pointer is stored, not copied, and
+     * must outlive this object. Until a URL is accepted the base is https://simpleota.com.
      *
      * https is accepted in any case. http and any other value return false,
      * print a [SimpleOTAClient] line (not_https or malformed), and leave the
@@ -372,11 +368,16 @@ public:
     const char* lastOfferedVersion() const;
 
     /**
+     * @brief The build number this device reports, 0 before its first update.
+     */
+    uint32_t currentBuild() const;
+
+    /**
      * @brief Get lifecycle events: checks, download progress, failures with
      *        their reason, the reboot, and the trial's confirm or rollback.
      *
      * Called on the task that runs the update: the managed task, or the one
-     * that calls check(), apply() or confirmRunning(). Keep it quick, and
+     * that calls check(), apply() or confirm(). Keep it quick, and
      * don't call the client from it.
      *
      * @param callback  nullptr to stop.
@@ -387,18 +388,18 @@ public:
     // Trial-install / rollback API
     //
     // After a successful apply() that reboots into a new image, the device
-    // enters a "trial" state. The new firmware must call confirmRunning()
+    // enters a "trial" state. The new firmware must call confirm()
     // within setConfirmTimeout() seconds, or the library reboots into the
     // previous partition and queues a "rolled_back" report, sent at the start
     // of the next check().
     //
-    // In managed mode (begin()), the library auto-calls confirmRunning() on
+    // In managed mode (begin()), the library auto-calls confirm() on
     // the first HTTP 200 from /check/ unless setManagedAutoConfirm(false)
     // was called. In polling mode (manual check()/apply()), the application
-    // is responsible for calling confirmRunning() once it determines the new
+    // is responsible for calling confirm() once it determines the new
     // image is healthy.
     //
-    // A crash or reset before confirmRunning(), even in a global constructor,
+    // A crash or reset before confirm(), even in a global constructor,
     // makes the bootloader return to the previous partition, and a hang from
     // setup() onwards is reset by the chip watchdog. Building with
     // SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK leaves the rollback to the
@@ -407,26 +408,13 @@ public:
     // ------------------------------------------------------------------
 
     /**
-     * @brief Master switch for the trial-install / rollback machinery.
-     *
-     * Default: true.
-     *
-     * When set to false, apply() behaves as it did pre-0.2.0: write the new
-     * image, reboot, and never look back. A device that boots into a new
-     * image while this is false accepts it and reports it confirmed.
-     *
-     * @param enabled  true = rollback enabled (default); false = no trial state.
-     */
-    void setRollbackEnabled(bool enabled);
-
-    /**
      * @brief Control whether managed mode auto-confirms on a successful /check/ response.
      *
      * Managed mode only. Default: true.
      *
-     * When true, the managed task auto-calls confirmRunning() on the first HTTP
+     * When true, the managed task auto-calls confirm() on the first HTTP
      * 200 from /check/ during a TRIAL boot. When false, the application must call
-     * confirmRunning() itself (e.g. from the onResult callback or after its own
+     * confirm() itself (for example after its own
      * health checks complete).
      *
      * @param enabled  true = auto-confirm (default); false = manual confirm required.
@@ -461,7 +449,10 @@ public:
      *         device was not in a trial (a no-op), or if the bootloader could
      *         not record the image as good (the trial carries on; call again).
      */
-    bool confirmRunning();
+    bool confirm();
+
+    /// The name before 1.0.0.
+    __attribute__((deprecated("use confirm()"))) bool confirmRunning() { return confirm(); }
 
     /**
      * @brief Query whether this boot is a not-yet-confirmed trial install.
@@ -473,7 +464,10 @@ public:
      *
      * @return true if a trial is in progress; false otherwise.
      */
-    bool isTrialInstall();
+    bool isTrialBoot();
+
+    /// The name before 1.0.0.
+    __attribute__((deprecated("use isTrialBoot()"))) bool isTrialInstall() { return isTrialBoot(); }
 
     /**
      * @brief Enable or disable verbose Serial logging at runtime.
@@ -490,7 +484,7 @@ public:
     /**
      * @brief Start the managed-mode background task.
      *
-     * Starts a FreeRTOS task that periodically calls check() and apply(). The
+     * Starts a FreeRTOS task that periodically checks and applies. The
      * library is transport-agnostic: it does not manage Wi-Fi, Ethernet, or PPP.
      * The application owns connectivity.
      *
@@ -498,9 +492,6 @@ public:
      *
      * @param checkIntervalSec  How often to check for updates, in seconds.
      *                          Default: SIMPLEOTA_CHECK_INTERVAL_S.
-     * @param onResult          Optional callback invoked with the OTAResult after
-     *                          apply() returns. Not called when apply() triggers
-     *                          an automatic reboot.
      * @param isConnected       Optional callback returning true when IP connectivity
      *                          is available. The task polls this every second and
      *                          only attempts a check when it returns true. If nullptr
@@ -515,16 +506,21 @@ public:
      *                          boot. Default: 0 (no delay).
      */
     void begin(uint32_t checkIntervalSec = SIMPLEOTA_CHECK_INTERVAL_S,
-               void (*onResult)(OTAResult) = nullptr,
                bool (*isConnected)()       = nullptr,
                uint32_t initialDelayMs     = 0);
+
+    /**
+     * @brief Wake the managed task to check now. False when begin()'s task
+     *        is not running.
+     */
+    bool checkNow();
 
     /**
      * @brief Stop the managed-mode background task started by begin().
      *
      * The task stops between steps, so a download or flash write is never
      * cut short: this waits for the current step, up to a minute. Called
-     * from the task itself (an onResult callback), it returns at once and
+     * from the task itself (an onEvent callback), it returns at once and
      * the task stops after the callback.
      */
     void end();
@@ -576,11 +572,10 @@ private:
 
     // Managed mode: the core's task.
     sota_runner_t _runner;
-    void        (*_onResult)(OTAResult);
     void        (*_onEvent)(const OTAEventInfo&);
     bool        (*_isConnected)();
     static bool  connectedFor(void* self);
-    static void  resultFor(sota_apply_result_t result, void* self);
+    bool         polling(const char* caller);  ///< setUp(), and no managed task.
     bool         setUp(const char* caller);  ///< _engineOk, with a warning when false.
 
     friend void sota_app_event(void* user, const sota_event_t* event);

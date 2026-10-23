@@ -32,7 +32,7 @@ int sota_net_post(void* user, const char* url, const char* token, const char* bo
     SimpleOtaTLSClient tls;
     tls.setCACert(self->_caCert);
     HTTPClient http;
-    http.setTimeout(SIMPLEOTA_TIMEOUT_MS);
+    http.setTimeout(SIMPLEOTA_HTTP_TIMEOUT_MS);
     if (!http.begin(tls, url)) return -1;
     http.addHeader("Authorization", String("Bearer ") + token);
     http.addHeader("Content-Type", "application/json");
@@ -51,7 +51,7 @@ int sota_net_dl_open(void* user, const char* url, int64_t* len, char* location,
     Download* d = new (std::nothrow) Download();
     if (!d) return 0;
     d->tls.setCACert(self->_caCert);
-    d->http.setTimeout(SIMPLEOTA_TIMEOUT_MS);
+    d->http.setTimeout(SIMPLEOTA_HTTP_TIMEOUT_MS);
     d->http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     static const char* kLocation[] = {"Location"};
     d->http.collectHeaders(kLocation, 1);
@@ -101,7 +101,7 @@ int sota_net_dl_read(void* user, uint8_t* buf, size_t cap) {
             return n;
         }
         if (!d->http.connected()) return 0;
-        if (millis() - d->lastByteAt > SIMPLEOTA_TIMEOUT_MS) return SOTA_NET_STALLED;
+        if (millis() - d->lastByteAt > SIMPLEOTA_HTTP_TIMEOUT_MS) return SOTA_NET_STALLED;
         delay(1);
     }
 }

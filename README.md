@@ -44,6 +44,7 @@ Starting a new project? [simpleOTA-starter-arduino](https://github.com/wassie-de
 - [Footprint](#footprint)
 - [Limitations](#limitations)
 - [Troubleshooting](#troubleshooting)
+- [Arduino and ESP-IDF](#arduino-and-esp-idf)
 - [License](#license)
 
 ---
@@ -55,7 +56,7 @@ Starting a new project? [simpleOTA-starter-arduino](https://github.com/wassie-de
 - **NVS build-number persistence:** the library reads and writes the SimpleOTA-assigned build number automatically.
 - **Status event reporting:** reports the full update lifecycle back to the SimpleOTA backend.
 - **On-device firmware signature verification:** signed artifacts are verified against your pinned Ed25519 public key, streamed during download, before the image is ever marked bootable. See [Signed firmware](#signed-firmware).
-- **Trial install with timeout-based rollback:** the library records the previous image before switching to the new one, then rolls back to it if the new image crashes, hangs, or does not call `confirmRunning()` within the configurable timeout. See [Rollback](#rollback).
+- **Trial install with timeout-based rollback:** the library records the previous image before switching to the new one, then rolls back to it if the new image crashes, hangs, or does not call `confirm()` within the configurable timeout. See [Rollback](#rollback).
 - **No external dependencies:** uses `HTTPClient` and `NetworkClientSecure` / `WiFiClientSecure` from the Arduino-ESP32 core, and ESP-IDF's OTA and NVS APIs. The update logic is [SimpleOTAClient-core](https://github.com/wassie-dev/simpleOTAClient-core), shared with the ESP-IDF client and copied into `src/sota_core`, with a vendored copy of [Monocypher](https://monocypher.org) 3.1.3 for Ed25519; nothing to install.
 - **Compatible with Arduino-ESP32 2.x and 3.x**.
 - **Secure by default:** the bundled ISRG Root X1 root CA is used automatically; no configuration needed for production.
@@ -111,7 +112,7 @@ The library is **transport-agnostic**: it does not manage Wi-Fi, Ethernet, or PP
 #include <WiFi.h>
 #include <SimpleOTAClient.h>
 
-SimpleOTAClient ota("soto_proj_xxxx", SimpleOTAClient::CHIP_ESP32);
+SimpleOTAClient ota("soto_proj_xxxx");
 
 static bool wifiUp() { return WiFi.status() == WL_CONNECTED; }
 
@@ -119,7 +120,7 @@ void setup() {
     Serial.begin(115200);
     WiFi.mode(WIFI_STA);
     WiFi.begin("ssid", "password");
-    ota.begin(3600, nullptr, wifiUp);   // check every hour once Wi-Fi is up
+    ota.begin(3600, wifiUp);   // check every hour once Wi-Fi is up
 }
 
 void loop() {
@@ -131,18 +132,20 @@ The task polls `isConnected` once a second and only attempts a check while it re
 
 For Ethernet, cellular, or any other stack, supply the equivalent probe (`ETH.linkUp()`, your modem's `isConnected()`, etc.).
 
-To be notified of errors (with the default `setAutoReboot(true)`, successful updates reboot before the callback fires):
+To be notified of failures, progress or the trial's outcome, register [`onEvent()`](#void-oneventvoid-callbackconst-otaeventinfo-event):
 
 ```cpp
-ota.begin(3600, [](OTAResult r) {
-    if (r != OTA_SUCCESS)
-        Serial.printf("OTA failed: %d\n", r);
-}, wifiUp);
+ota.onEvent([](const OTAEventInfo& e) {
+    if (e.id == OTA_EVENT_UPDATE_FAILED)
+        Serial.printf("OTA failed: %s\n", e.reason);
+});
 ```
+
+`checkNow()` wakes the task for an immediate check.
 
 ### Polling mode
 
-Call `check()` and `apply()` from your own loop or FreeRTOS task for full control over timing and error handling:
+Call `check()` and `apply()` from your own loop or FreeRTOS task for full control over timing and error handling. Polling and managed mode don't mix: while `begin()`'s task runs, `check()` returns `false` and `apply()` returns `OTA_NO_OFFER`, with a warning.
 
 ```cpp
 void loop() {
@@ -161,7 +164,7 @@ Three runnable examples are bundled:
 | Example | What it shows |
 | --- | --- |
 | [`examples/BasicOTA/BasicOTA.ino`](examples/BasicOTA/BasicOTA.ino) | Minimal polling integration: Wi-Fi up, `check()` + `apply()` from `loop()`. Start here. |
-| [`examples/ManagedOTA/ManagedOTA.ino`](examples/ManagedOTA/ManagedOTA.ino) | Hands-off managed mode using `begin()` with an `isConnected` probe and a result callback. |
+| [`examples/ManagedOTA/ManagedOTA.ino`](examples/ManagedOTA/ManagedOTA.ino) | Hands-off managed mode using `begin()` with an `isConnected` probe and `onEvent()`. |
 | [`examples/AdvancedOTA/AdvancedOTA.ino`](examples/AdvancedOTA/AdvancedOTA.ino) | Custom `deviceId` / `boardId` / `hardwareRevision`, `setAutoReboot(false)` with `rebootForUpdate()` for the application-driven restart, verbose logging. |
 
 ---
@@ -190,7 +193,7 @@ SimpleOTA assigns its own **strictly monotonic build number** each time you uplo
 
 ```cpp
 SimpleOTAClient(const char* token,
-          const char* chipFamily,
+          const char* chipFamily       = nullptr,
           const char* deviceId         = nullptr,
           const char* boardId          = nullptr,
           const char* hardwareRevision = nullptr);
@@ -201,7 +204,7 @@ SimpleOTAClient(const char* token,
 | Parameter | Description |
 | --- | --- |
 | `token` | Project token or device token. Sent as `Authorization: Bearer <token>`. A **project token** (`soto_proj_...`) authenticates any device in the project; the server uses `deviceId` to identify the specific device. A **device token** authenticates a single pre-registered device; the server resolves it directly and ignores `deviceId` from the payload. |
-| `chipFamily` | Espressif chip variant. Use the provided constants: `SimpleOTAClient::CHIP_ESP32`, `CHIP_ESP32S2`, `CHIP_ESP32S3`, `CHIP_ESP32C3`, `CHIP_ESP32C6`, `CHIP_ESP32H2`. A raw string literal is also accepted for unlisted variants. |
+| `chipFamily` | Optional. When `nullptr` (default), the chip the sketch is built for, as on ESP-IDF. Pass a `SimpleOTAClient::CHIP_*` constant or a string only to report a different family. |
 | `deviceId` | Optional. Stable per-unit identifier. When `nullptr` (default), the library automatically uses the Wi-Fi MAC address formatted as `"aa:bb:cc:dd:ee:ff"`. Pass a custom string to override. |
 | `boardId` | Optional. Omitted from requests when `nullptr`. |
 | `hardwareRevision` | Optional. Omitted from requests when `nullptr`. |
@@ -233,7 +236,7 @@ Executes the offer stored by the most recent successful `check()`.
 | `OTA_FLASH_FAIL` | Network or flash write error. Partition was not committed. |
 | `OTA_NO_OFFER` | `check()` had not been called or returned `false`. |
 | `OTA_SIGNATURE_FAIL` | Ed25519 signature verification failed for a signed artifact. Partition was **not** committed; a `failed` event with reason `signature_invalid` was reported. Treat as a security signal, not flakiness. See [Signed firmware](#signed-firmware). |
-| `OTA_UNCONFIRMED` | The running firmware is on trial and has not been confirmed. Nothing was downloaded or reported, because the other slot holds the previous firmware the trial may still return to. Call `confirmRunning()`, then `apply()` again; the offer is kept. |
+| `OTA_UNCONFIRMED` | The running firmware is on trial and has not been confirmed. Nothing was downloaded or reported, because the other slot holds the previous firmware the trial may still return to. Call `confirm()`, then `apply()` again; the offer is kept. |
 | `OTA_REBOOT_PENDING` | With `setAutoReboot(false)`, an earlier `apply()` flashed an update that is waiting for its reboot. Nothing was downloaded or reported, because the next update slot holds the waiting image. Call `rebootForUpdate()` to install it. |
 
 > **Note on `validated`:** this event is reported after `Update.end()` succeeds (meaning "the image was flashed cleanly"), not after a successful boot. A subsequent `reboot` event is emitted immediately before `esp_restart()` on the auto-reboot path; a `confirmed` event follows once the trial is confirmed (see [Rollback](#rollback)).
@@ -242,21 +245,17 @@ Executes the offer stored by the most recent successful `check()`.
 
 ### `void onEvent(void (*callback)(const OTAEventInfo& event))`
 
-Calls `callback` for each lifecycle event, the same events the ESP-IDF client's `event_cb` gets: `OTA_EVENT_CHECK_DONE`, `OTA_EVENT_UPDATE_AVAILABLE`, `OTA_EVENT_DOWNLOAD_PROGRESS` (`bytesDone` of `bytesTotal`), `OTA_EVENT_UPDATE_FAILED` (`reason` says why), `OTA_EVENT_BEFORE_REBOOT`, `OTA_EVENT_TRIAL_BOOT`, `OTA_EVENT_CONFIRMED` and `OTA_EVENT_ROLLING_BACK`. `buildNumber` is the build the event is about. It runs on the task that drives the update (the managed task, or the one calling `check()`, `apply()` or `confirmRunning()`), so keep it short and don't call the client from it. Pass `nullptr` to stop.
+Calls `callback` for each lifecycle event, the same events the ESP-IDF client's `event_cb` gets: `OTA_EVENT_CHECK_DONE`, `OTA_EVENT_UPDATE_AVAILABLE`, `OTA_EVENT_DOWNLOAD_PROGRESS` (`bytesDone` of `bytesTotal`), `OTA_EVENT_UPDATE_FAILED` (`reason` says why), `OTA_EVENT_BEFORE_REBOOT`, `OTA_EVENT_TRIAL_BOOT`, `OTA_EVENT_CONFIRMED` and `OTA_EVENT_ROLLING_BACK`. `buildNumber` is the build the event is about. It runs on the task that drives the update (the managed task, or the one calling `check()`, `apply()` or `confirm()`), so keep it short and don't call the client from it. Pass `nullptr` to stop.
 
-### `bool report(const char* event, const char* reason = nullptr)`
+### Status events
 
-Manually posts a single status event to `/api/v1/ota/status/`. Useful for custom lifecycle control flows. Returns `true` on HTTP 2xx.
-
-Requires a deployment context populated by a successful `check()`. The context is retained through `apply()` (so post-apply `report()` calls work) and is cleared on the next `check()` invocation. Outside that window, `report()` returns `false` without sending anything.
-
-Full event vocabulary defined by the API:
+The library posts every status event itself. Full event vocabulary defined by the API:
 
 ```
 offered  download_started  downloaded  flashed  validated  reboot  confirmed  failed  rolled_back
 ```
 
-Events emitted automatically by `apply()`: `download_started`, `downloaded`, `flashed`, `validated`, `failed`, and (on the auto-reboot path) `reboot`. The library also queues `confirmed` when a trial is confirmed and `rolled_back` after a rollback, and sends them at the start of the next `check()` (see [Server interaction](#server-interaction)).
+Events posted by `apply()`: `download_started`, `downloaded`, `flashed`, `validated`, `failed`, and (on the auto-reboot path) `reboot`. The library also queues `confirmed` when a trial is confirmed and `rolled_back` after a rollback, and sends them at the start of the next `check()` (see [Server interaction](#server-interaction)).
 
 ---
 
@@ -268,7 +267,7 @@ Overrides the CA certificate used for HTTPS verification. By default the library
 
 ### `bool setServerUrl(const char* url)`
 
-Points `check()` and status posts at another SimpleOTA server. Call it before `begin()`, and before `check()` in polling mode, not while a check or status post may be running. The pointer is stored and must outlive the client. Until a URL is accepted, the base is `https://simpleota.com`.
+Points `check()` and status posts at another SimpleOTA server. Call it before `begin()` or after `end()`: while the managed task runs it returns `false` with a warning. The pointer is stored and must outlive the client. Until a URL is accepted, the base is `https://simpleota.com`.
 
 ```cpp
 static const char kOtaBase[] = "https://ota.example.com";
@@ -287,12 +286,7 @@ Default: `true`. When `false`, `apply()` returns `OTA_SUCCESS` without calling `
 
 ### `void rebootForUpdate()`
 
-Convenience for applications running with `setAutoReboot(false)`. Emits the `reboot` lifecycle event for the update that is waiting, then calls `esp_restart()`. Does not return. Equivalent to:
-
-```cpp
-ota.report("reboot");
-ESP.restart();
-```
+Convenience for applications running with `setAutoReboot(false)`. Emits the `reboot` lifecycle event for the update that is waiting, then calls `esp_restart()`. Does not return.
 
 The event names the waiting update's deployment even after later `check()` calls, or after `end()` and `begin()`. With no update waiting nothing is posted; the device reboots either way.
 
@@ -368,31 +362,33 @@ Returns the version label string from the last update offered by `check()` (e.g.
 
 ---
 
+### `uint32_t currentBuild()`
+
+The build number this device reports to the server, or `0` before its first SimpleOTA update.
+
+---
+
 ### `static void setDebug(bool enabled)`
 
 Enables or disables verbose `[SimpleOTAClient]` logging on `Serial` at runtime. See [Logging](#logging).
 
 ---
 
-### `void setRollbackEnabled(bool enabled)`
-
-Enables or disables the library-managed trial-install / rollback machinery. Default: `true`. See [Rollback](#rollback). When `false`, `apply()` saves no trial record and `confirmRunning()` always returns `false` (no trial is ever started). The new image is accepted on its first boot, which queues a `confirmed` event.
-
----
-
 ### `void setManagedAutoConfirm(bool enabled)`
 
-In managed mode (`begin()`), controls whether the library automatically calls `confirmRunning()` on the first successful response (HTTP 200) from `/api/v1/ota/check/` after a trial boot. Default: `true`. Set to `false` to require an explicit `confirmRunning()` call from your application code instead. No effect in polling mode (where you always call `confirmRunning()` yourself).
+In managed mode (`begin()`), controls whether the library automatically calls `confirm()` on the first successful response (HTTP 200) from `/api/v1/ota/check/` after a trial boot. Default: `true`. Set to `false` to require an explicit `confirm()` call from your application code instead. No effect in polling mode (where you always call `confirm()` yourself).
 
 ---
 
 ### `void setConfirmTimeout(uint32_t seconds)`
 
-Sets the per-instance trial-install confirm timeout in seconds. Defaults to `SIMPLEOTA_CONFIRM_TIMEOUT_S` (compile-time default `300`). Clamped to `[10, 86400]`. On a trial boot, call it before `begin()` in managed mode, or before the first `check()`, `apply()`, `isTrialInstall()` or `confirmRunning()` in polling mode; the trial's timer starts then. See [Rollback](#rollback).
+Sets the per-instance trial-install confirm timeout in seconds. Defaults to `SIMPLEOTA_CONFIRM_TIMEOUT_S` (compile-time default `300`). Clamped to `[10, 86400]`. On a trial boot, call it before `begin()` in managed mode, or before the first `check()`, `apply()`, `isTrialBoot()` or `confirm()` in polling mode; the trial's timer starts then. See [Rollback](#rollback).
 
 ---
 
-### `bool confirmRunning()`
+### `bool confirm()`
+
+Called `confirmRunning()` before 1.0.0; that name still compiles, with a deprecation warning.
 
 Confirms that the currently-running firmware is healthy and ends the trial install. Tells the bootloader the image is good, stops the rollback timer and the chip watchdog, clears the trial record from NVS, and queues a `confirmed` status event, sent at the start of the next `check()`. Returns `true` if a trial was in progress and is now confirmed. Returns `false` on a normal boot (a safe no-op), and also when the bootloader could not record the image as good; the trial then carries on and you can call it again.
 
@@ -400,9 +396,11 @@ Call from your application code once you are satisfied the new firmware is worki
 
 ---
 
-### `bool isTrialInstall()`
+### `bool isTrialBoot()`
 
-Returns `true` while a trial install is in progress (i.e. the current boot is the first boot of a new firmware image and `confirmRunning()` has not yet been called). Use this to avoid expensive health-probe code on normal boots.
+Called `isTrialInstall()` before 1.0.0; that name still compiles, with a deprecation warning.
+
+Returns `true` while a trial install is in progress (i.e. the current boot is the first boot of a new firmware image and `confirm()` has not yet been called). Use this to avoid expensive health-probe code on normal boots.
 
 ---
 
@@ -412,22 +410,29 @@ Starts a FreeRTOS background task (stack: 8 KB, priority: 1) that runs the follo
 
 1. **If `initialDelayMs` > 0**, sleep for that many milliseconds (one-shot, at task start only). Use this to stagger the first HTTPS request relative to other TLS sessions starting concurrently at boot (e.g. MQTT). Default: `0`.
 2. If `isConnected` was supplied, wait until it returns `true` (polled every second). Otherwise skip this step.
-3. **If a trial install is in progress**, run a short-retry inner loop: retry `/check/` every `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` seconds (default 10 s) until the server responds with HTTP 200 or the confirm timeout expires. With `setManagedAutoConfirm(true)` (default), call `confirmRunning()` on the first such response, send the `confirmed` event straight away, and `apply()` an update that check offered; that check counts as this cycle's, so the loop goes on to step 6. Skip this step on a normal (non-trial) boot.
-4. Call `check()`. If an update is available, call `apply()`.
-5. If `onResult` is set and `apply()` returned without rebooting, invoke it with the `OTAResult`.
-6. Sleep for `checkIntervalSec` seconds, then repeat.
+3. **If a trial install is in progress**, run a short-retry inner loop: retry `/check/` every `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` seconds (default 10 s) until the server responds with HTTP 200 or the confirm timeout expires. With `setManagedAutoConfirm(true)` (default), call `confirm()` on the first such response, send the `confirmed` event straight away, and `apply()` an update that check offered; that check counts as this cycle's, so the loop goes on to step 6. Skip this step on a normal (non-trial) boot.
+4. Check in. If an update is available, apply it.
+5. Sleep for `checkIntervalSec` seconds, or until `checkNow()`, then repeat.
+
+Outcomes arrive through [`onEvent()`](#void-oneventvoid-callbackconst-otaeventinfo-event).
 
 The library is transport-agnostic and does not import any networking stack. The application is responsible for bringing up Wi-Fi, Ethernet, PPP, or whatever connectivity it uses. Pass `isConnected` whenever connectivity may not be up when `begin()` runs, such as straight after `WiFi.begin()`. Without it, the first check runs without waiting for the link, a transport failure returns `false` from `check()`, and the retry waits for the next interval, `checkIntervalSec` later.
 
 Safe to call once from `setup()`. Calling `begin()` while a task is already running is a no-op.
 
-> **Note:** with the default `setAutoReboot(true)`, a successful flash triggers `esp_restart()` before `onResult` is called. Use `setAutoReboot(false)` if you want the callback to fire on success as well.
+Signature: `begin(checkIntervalSec = SIMPLEOTA_CHECK_INTERVAL_S, isConnected = nullptr, initialDelayMs = 0)`. Before 1.0.0 the second argument was an `onResult` callback; use `onEvent()` instead.
+
+---
+
+### `bool checkNow()`
+
+Wakes the managed task to check now, like `simpleota_check_now()` on ESP-IDF. Returns `false` when `begin()`'s task is not running.
 
 ---
 
 ### `void end()`
 
-Deletes the background task started by `begin()`. Do not call while a firmware flash is in progress.
+Stops the background task started by `begin()`. The task stops between steps, so a download or flash write is never cut short: `end()` waits for the current step, up to a minute.
 
 ---
 
@@ -445,7 +450,7 @@ The sequence of events reported to the server during a successful `apply()`:
 check()  →  download_started  →  downloaded  →  flashed  →  validated  →  reboot  →  [esp_restart()]  →  confirmed
 ```
 
-The terminal `confirmed` event is queued when `confirmRunning()` runs on the new image (managed mode does this automatically by default; polling mode requires an explicit call) and sent at the start of the next `check()`. If the trial fails instead, the device returns to the previous firmware and a `rolled_back` event takes the place of `confirmed`.
+The terminal `confirmed` event is queued when `confirm()` runs on the new image (managed mode does this automatically by default; polling mode requires an explicit call) and sent at the start of the next `check()`. If the trial fails instead, the device returns to the previous firmware and a `rolled_back` event takes the place of `confirmed`.
 
 On failure at any stage, a `failed` event is reported with a short reason token before the method returns:
 
@@ -459,7 +464,7 @@ On failure at any stage, a `failed` event is reported with a short reason token 
 | `update_begin_failed` | `Update.begin()` failed, likely a partition issue |
 | `update_write_failed` | Flash write error during streaming |
 | `stream_error` | Socket error mid-download |
-| `download_stalled` | No bytes received within `SIMPLEOTA_TIMEOUT_MS` |
+| `download_stalled` | No bytes received within `SIMPLEOTA_HTTP_TIMEOUT_MS` |
 | `short_read` | Stream closed before `Content-Length` bytes arrived |
 | `checksum_mismatch` | SHA-256 of received bytes did not match server's value |
 | `signature_invalid` | Signed artifact failed Ed25519 verification, or no key is pinned; see [Signed firmware](#signed-firmware) |
@@ -558,29 +563,29 @@ Ed25519 verification uses a vendored, unmodified copy of [Monocypher](https://mo
 
 ## Rollback
 
-The library supports a **library-managed trial install with timeout-based rollback**. Before `apply()` switches the boot slot to the new image, it saves a trial record: the outgoing image's partition address and identity (build number, hash, version label). A power cut at any point therefore leaves either the old image running or the new image on trial, never the new image unsupervised. Then it reboots into the new firmware. The new boot enters a "trial" state: if the application calls `confirmRunning()` before `SIMPLEOTA_CONFIRM_TIMEOUT_S` (default 300 s), the image is accepted and the trial record is cleared. Otherwise the library switches back to the previous partition and reboots into it.
+The library supports a **library-managed trial install with timeout-based rollback**. Before `apply()` switches the boot slot to the new image, it saves a trial record: the outgoing image's partition address and identity (build number, hash, version label). A power cut at any point therefore leaves either the old image running or the new image on trial, never the new image unsupervised. Then it reboots into the new firmware. The new boot enters a "trial" state: if the application calls `confirm()` before `SIMPLEOTA_CONFIRM_TIMEOUT_S` (default 300 s), the image is accepted and the trial record is cleared. Otherwise the library switches back to the previous partition and reboots into it.
 
-The stock Arduino-ESP32 bootloader can switch back to the previous firmware by itself, but the core normally accepts every new image before `setup()` runs. The library tells the core to leave a SimpleOTA trial on probation (it defines `verifyRollbackLater()`), and only a SimpleOTA trial: an image written by ArduinoOTA or another updater is accepted as usual. So a crash or a reset at any point before `confirmRunning()`, including in a global constructor or early in `setup()`, makes the bootloader return to the previous firmware on the next boot. The `rolled_back` report then carries the reset that ended the trial: `panic`, `int_wdt`, `task_wdt`, `watchdog`, `brownout`, `power_on`, `deep_sleep` or `reset`. Deep sleep also ends a trial: an image that wakes from deep sleep before `confirmRunning()` goes back to the previous firmware, with the reason `deep_sleep`, so confirm before sleeping. `confirmRunning()` tells the bootloader the image is good first; if that fails, it returns `false` and the trial carries on.
+The stock Arduino-ESP32 bootloader can switch back to the previous firmware by itself, but the core normally accepts every new image before `setup()` runs. The library tells the core to leave a SimpleOTA trial on probation (it defines `verifyRollbackLater()`), and only a SimpleOTA trial: an image written by ArduinoOTA or another updater is accepted as usual. So a crash or a reset at any point before `confirm()`, including in a global constructor or early in `setup()`, makes the bootloader return to the previous firmware on the next boot. The `rolled_back` report then carries the reset that ended the trial: `panic`, `int_wdt`, `task_wdt`, `watchdog`, `brownout`, `power_on`, `deep_sleep` or `reset`. Deep sleep also ends a trial: an image that wakes from deep sleep before `confirm()` goes back to the previous firmware, with the reason `deep_sleep`, so confirm before sleeping. `confirm()` tells the bootloader the image is good first; if that fails, it returns `false` and the trial carries on.
 
-A sketch cannot define its own `verifyRollbackLater()` alongside the library. Build with `-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` to leave the core's behaviour alone. The library then rolls back itself, as the bootloader would: on the confirm timeout, and on any reset before `confirmRunning()` (a crash, a watchdog, a brownout, a power loss, `ESP.restart()` or deep sleep), so confirm before restarting on purpose. It misses an image that crashes before the library's first call on every boot. See [Limitations](#limitations).
+A sketch cannot define its own `verifyRollbackLater()` alongside the library. Build with `-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` to leave the core's behaviour alone. The library then rolls back itself, as the bootloader would: on the confirm timeout, and on any reset before `confirm()` (a crash, a watchdog, a brownout, a power loss, `ESP.restart()` or deep sleep), so confirm before restarting on purpose. It misses an image that crashes before the library's first call on every boot. See [Limitations](#limitations).
 
-A hang that also stops the FreeRTOS confirm timer is caught by the chip's own watchdog (the RTC or LP watchdog, which runs on the slow clock). It starts in `verifyRollbackLater()` before `setup()` for the compile-time `SIMPLEOTA_CONFIRM_TIMEOUT_S`, restarts with this instance's confirm time when the library first runs, and stops on `confirmRunning()`. It waits for the confirm time plus a margin: the larger of 10 percent and the time one request can take at `SIMPLEOTA_TIMEOUT_MS` (70 s at the default), and never less than 60 s. When it fires, the chip resets, the previous firmware comes back, and the report says `watchdog`. So call `confirmRunning()` within the confirm time, and if your bring-up before the first library call can take longer than the default, raise `SIMPLEOTA_CONFIRM_TIMEOUT_S` with a `-D` flag. At the usual internal slow clock the watchdog can wait at most about 8 hours (about 13 hours on the S2); a longer confirm time prints a warning and the watchdog fires at its limit. On core 3.x it stops before deep sleep, so the wake reports `deep_sleep`; on core 2.x a sleep longer than the rest of the confirm time ends in a watchdog reset instead. Either way the trial rolls back, so confirm before sleeping. Build with `-DSIMPLEOTA_DISABLE_TRIAL_WATCHDOG` to leave it out. That flag must reach the C compiler too: put it in a `build_opt.h` next to the sketch, or set both `compiler.c.extra_flags` and `compiler.cpp.extra_flags`.
+A hang that also stops the FreeRTOS confirm timer is caught by the chip's own watchdog (the RTC or LP watchdog, which runs on the slow clock). It starts in `verifyRollbackLater()` before `setup()` for the compile-time `SIMPLEOTA_CONFIRM_TIMEOUT_S`, restarts with this instance's confirm time when the library first runs, and stops on `confirm()`. It waits for the confirm time plus a margin: the larger of 10 percent and the time one request can take at `SIMPLEOTA_HTTP_TIMEOUT_MS` (70 s at the default), and never less than 60 s. When it fires, the chip resets, the previous firmware comes back, and the report says `watchdog`. So call `confirm()` within the confirm time, and if your bring-up before the first library call can take longer than the default, raise `SIMPLEOTA_CONFIRM_TIMEOUT_S` with a `-D` flag. At the usual internal slow clock the watchdog can wait at most about 8 hours (about 13 hours on the S2); a longer confirm time prints a warning and the watchdog fires at its limit. On core 3.x it stops before deep sleep, so the wake reports `deep_sleep`; on core 2.x a sleep longer than the rest of the confirm time ends in a watchdog reset instead. Either way the trial rolls back, so confirm before sleeping. Build with `-DSIMPLEOTA_DISABLE_TRIAL_WATCHDOG` to leave it out. That flag must reach the C compiler too: put it in a `build_opt.h` next to the sketch, or set both `compiler.c.extra_flags` and `compiler.cpp.extra_flags`.
 
 ### Polling mode
 
-You must call `confirmRunning()` explicitly. The natural place is at the top of `loop()`, *after* your application has proven it can do real work:
+You must call `confirm()` explicitly. The natural place is at the top of `loop()`, *after* your application has proven it can do real work:
 
 ```cpp
 void loop() {
     if (WiFi.status() != WL_CONNECTED) connectWiFi();
-    ota.confirmRunning();   // no-op when not in trial; safe to call every iteration
+    ota.confirm();   // no-op when not in trial; safe to call every iteration
     // ... your app code ...
     if (ota.check()) ota.apply();
     delay(SIMPLEOTA_CHECK_INTERVAL_S * 1000UL);
 }
 ```
 
-If you never call `confirmRunning()`, every successful OTA will roll back.
+If you never call `confirm()`, every successful OTA will roll back.
 
 ### Managed mode (default)
 
@@ -593,8 +598,8 @@ ota.setManagedAutoConfirm(false);
 ota.setConfirmTimeout(120);   // give your app 120 s to confirm
 ota.begin(...);
 // ...
-if (ota.isTrialInstall() && applicationHealthy()) {
-    ota.confirmRunning();
+if (ota.isTrialBoot() && applicationHealthy()) {
+    ota.confirm();
 }
 ```
 
@@ -606,7 +611,7 @@ The default 300 s timeout assumes Wi-Fi. For cellular or other transports where 
 
 ### Server interaction
 
-After a rollback the previous image's identity (build number, hash, version label) is restored in NVS, and a `rolled_back` status event with the failed deployment's `deployment_id` and `build_number` is queued. Its reason is `confirm_timeout` when the confirm timer ran out, otherwise the reset that ended the trial (see above). On a successful trial (`confirmRunning()` ran), a `confirmed` event is queued.
+After a rollback the previous image's identity (build number, hash, version label) is restored in NVS, and a `rolled_back` status event with the failed deployment's `deployment_id` and `build_number` is queued. Its reason is `confirm_timeout` when the confirm timer ran out, otherwise the reset that ended the trial (see above). On a successful trial (`confirm()` ran), a `confirmed` event is queued.
 
 Queued events are kept in NVS, at most two, oldest dropped first, and sent at the start of each `check()`. An event counts as delivered as soon as the server returns any HTTP response; the library does not act on what the response says. An event that gets no response stays queued for the next `check()`. Queued events never hold up an update.
 
@@ -616,25 +621,15 @@ Before relying on rollback in the field, try each way a trial can fail on one de
 
 | Test | Expected result |
 | --- | --- |
-| Calls `confirmRunning()` as usual | Stays on the new build; `confirmed` |
-| Never calls `confirmRunning()` (managed mode with `setManagedAutoConfirm(false)`) | Back on the known-good build after the confirm time; `rolled_back` with `confirm_timeout` |
+| Calls `confirm()` as usual | Stays on the new build; `confirmed` |
+| Never calls `confirm()` (managed mode with `setManagedAutoConfirm(false)`) | Back on the known-good build after the confirm time; `rolled_back` with `confirm_timeout` |
 | Calls `abort()` early in `setup()` | Back on the known-good build after one reset; `rolled_back` with `panic` |
 | Hangs in `setup()` (`for (;;) {}`) | Back on the known-good build; `rolled_back` with `confirm_timeout`, or with the watchdog reset that caught the hang |
 | Calls `disableCore0WDT()`, then starts a task at the highest priority on each core that spins forever, so the confirm timer cannot run either | Back on the known-good build after the confirm time plus the watchdog margin; `rolled_back` with `watchdog` |
-| Loses power before `confirmRunning()` | Back on the known-good build; `rolled_back` with `power_on` |
+| Loses power before `confirm()` | Back on the known-good build; `rolled_back` with `power_on` |
 | Loses power during the download | Stays on the known-good build and downloads the update again on a later check |
 
 Keep the confirm time short while testing, for example `setConfirmTimeout(60)`, and turn on [logging](#logging) to see each boot classified. Run the table once on a device that still has 0.4.0, so the first update into this release is covered too. If your devices use deep sleep, also deep-sleep a test build before it confirms: it should wake on the known-good build, with `rolled_back` and `deep_sleep`.
-
-### Disabling rollback
-
-If you do not want the rollback machinery at all:
-
-```cpp
-ota.setRollbackEnabled(false);
-```
-
-`apply()` then saves no trial record, and the new image is accepted on its first boot, which queues a `confirmed` event. A trial record left by an earlier boot with rollback enabled is cleared on the next boot; no manual NVS clearing is needed.
 
 ---
 
@@ -644,7 +639,7 @@ Override any of the following with a `-D` compiler flag or a `#define` placed **
 
 | Define | Default | Description |
 | --- | --- | --- |
-| `SIMPLEOTA_TIMEOUT_MS` | `15000` | Milliseconds before an HTTP request or a stalled download is abandoned. |
+| `SIMPLEOTA_HTTP_TIMEOUT_MS` | `15000` | Milliseconds before an HTTP request or a stalled download is abandoned. Called `SIMPLEOTA_TIMEOUT_MS` before 1.0.0, which still works. |
 | `SIMPLEOTA_CHECK_INTERVAL_S` | `3600` | Default check interval (in seconds) used by `begin()`. Also exposed as a constant for manual scheduling in polling mode. |
 | `SIMPLEOTA_CONFIRM_TIMEOUT_S` | `300` | Default trial-install confirm timeout (in seconds). See [Rollback](#rollback). Overridable per-instance via `setConfirmTimeout()`. |
 | `SIMPLEOTA_DISABLE_TRIAL_WATCHDOG` | unset | `-D` flag: leave the chip watchdog out. Crashes and resets still roll back. |
@@ -706,7 +701,6 @@ The figures below come from building examples/SignedOTA with arduino-cli 1.5.1 a
 | Hangs before `verifyRollbackLater()` | A hang in a global constructor happens before the chip watchdog starts, so nothing resets it. A crash there still rolls back. |
 | One instance per device | The trial record and the boot slot belong to the device, so one `SimpleOTAClient` runs at a time. A second instance does nothing until the first is destroyed; its `check()` and `begin()` print a warning. |
 | No automatic `reboot` event when `setAutoReboot(false)` | The library only emits `reboot` on the auto-reboot path it controls. Applications that drive their own restart should call `rebootForUpdate()` (which emits the event then calls `esp_restart()`) instead of `ESP.restart()` directly; see AdvancedOTA. |
-| `report()` requires a deployment context | The method needs a `deployment_id`, which only exists after a successful `check()`. The deployment context is retained through `apply()` so post-apply events (e.g. `"reboot"`) work, but `report()` returns `false` before any `check()` has succeeded. |
 | Application owns connectivity | The library is transport-agnostic and does not manage Wi-Fi, Ethernet, PPP, or reconnects. Establish a working IP connection before calling any library method, or supply an `isConnected` probe to `begin()`. |
 | TLS uses bundled root CA | The bundled ISRG Root X1 cert covers current SimpleOTA infrastructure. If the platform migrates storage providers to one using a different root, a library update will be required. |
 
@@ -720,8 +714,33 @@ The figures below come from building examples/SignedOTA with arduino-cli 1.5.1 a
 | `Update.begin failed` | Partition table has no OTA slot, or the OTA partition is too small for the firmware being applied. |
 | `OTA_CHECKSUM_FAIL` | The firmware object was replaced or corrupted on the server between the `/check/` response and the download. |
 | Device is offered the same build repeatedly | The `simpleota`/`sota_build` NVS key was cleared or overwritten. See [Build numbers](#build-numbers). A `current_build_number` of `0` always matches a pending deployment, so a wiped NVS will keep re-offering the same build. |
-| Download stalls or times out | Weak Wi-Fi signal, or `SIMPLEOTA_TIMEOUT_MS` is too short for the link speed and firmware size. Increase the timeout or improve signal quality. |
+| Download stalls or times out | Weak Wi-Fi signal, or `SIMPLEOTA_HTTP_TIMEOUT_MS` is too short for the link speed and firmware size. Increase the timeout or improve signal quality. |
 | `[SimpleOTAClient] WARNING: setCACert: TLS is always verified; keeping the current CA` | `setCACert(nullptr)` was called. Verification can't be turned off. See [Security](#security). |
+
+---
+
+## Arduino and ESP-IDF
+
+The [Arduino](https://github.com/xanderwasserman/SimpleOTAClient-Arduino) and [ESP-IDF](https://github.com/xanderwasserman/SimpleOTAClient-ESP-IDF) clients run the same core, so they have the same features, defaults and behaviour. Only the spelling follows each platform's style.
+
+| What | Arduino | ESP-IDF |
+|---|---|---|
+| Set up | `SimpleOTAClient ota(token, ...)` and setters | `simpleota_init(&config)` |
+| Managed mode | `begin(interval, isConnected, initialDelayMs)`, `end()` | `simpleota_start()`, `simpleota_stop()` |
+| Check now | `checkNow()` | `simpleota_check_now()` |
+| Polling mode | `check()`, `apply()` returning `OTAResult` | `simpleota_check()`, `simpleota_apply()` returning `simpleota_result_t` |
+| Events | `onEvent(callback)` | `config.event_cb` |
+| Confirm a trial | `confirm()` | `simpleota_confirm()` |
+| Confirm by hand in managed mode | `setManagedAutoConfirm(false)` | `config.manual_confirm = true` |
+| Trial state | `isTrialBoot()` | `simpleota_is_trial_boot()` |
+| Confirm timeout | `setConfirmTimeout(s)` | `config.confirm_timeout_s` |
+| Reboot when the app is ready | `setAutoReboot(false)`, `rebootForUpdate()` | `config.disable_auto_reboot`, `simpleota_reboot_for_update()` |
+| Server URL | `setServerUrl(url)` | `config.base_url`, `simpleota_set_server_url(url)` |
+| TLS trust | `setCACert(pem)` | `config.cert_pem` |
+| Signing keys | `setSigningPublicKey()`, `addSigningPublicKey()` | `config.signing_keys` |
+| Build and offer | `currentBuild()`, `lastOfferedVersion()` | `simpleota_current_build()`, `simpleota_last_offered_version()` |
+| Logging | `setDebug(true)` | `esp_log_level_set("simpleota", ...)` |
+| HTTP timeout | `-DSIMPLEOTA_HTTP_TIMEOUT_MS` | `CONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS` |
 
 ---
 

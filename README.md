@@ -32,8 +32,8 @@ Starting a new project? [simpleOTA-starter-arduino](https://github.com/wassie-de
   - [Managed mode](#managed-mode)
   - [Polling mode](#polling-mode)
 - [Build numbers](#build-numbers)
-- [Configuration](#configuration)
 - [API reference](#api-reference)
+- [Build options](#build-options)
 - [Update lifecycle](#update-lifecycle)
 - [Security](#security)
   - [Signed firmware](#signed-firmware)
@@ -175,32 +175,22 @@ SimpleOTA assigns its own **strictly monotonic build number** each time you uplo
 
 ---
 
-## Configuration
+## API reference
 
-All fields of `simpleota_config_t`. Start from `{}`; strings are copied by `simpleota_init()`.
+The **[API reference](https://wassie-dev.github.io/simpleotaclient-core/)** documents every function, result, event and configuration field. It is generated from [`src/simpleota.h`](src/simpleota.h), which has the same comments. In short:
 
-| Field | Default | Purpose |
-|---|---|---|
-| `token` | required | Project API token (device scope) or per-device token |
-| `base_url` | `https://simpleota.com` | Platform base URL; must be `https://` |
-| `device_id` | Wi-Fi STA MAC (`aa:bb:cc:dd:ee:ff`) | Stable per-unit identifier |
-| `chip_family` | the chip the sketch is built for | e.g. `esp32`, `esp32s3`, `esp32c3` |
-| `board_id`, `hardware_revision`, `partition_profile`, `channel` | omitted | Compatibility metadata; report what your artifacts constrain |
-| `labels_json` | omitted | Reserved: sent verbatim on check-ins, not yet consumed by the platform. Left out, with a warning, when it is not one JSON object |
-| `security_mode` | omitted | `SIMPLEOTA_SECURITY_SIGNED` to enforce signed firmware |
-| `version_label` | last persisted | Display-only version string |
-| `image_build` | 0 | Leave at 0 unless you flash release images over USB. See [When to set `image_build`](#when-to-set-image_build) |
-| `nvs_schema_version` | 1 | On-device data schema the firmware expects |
-| `check_interval_s` | 3600 | Steady-state poll interval |
-| `initial_delay_ms` | 0 | Delay before the first check after `simpleota_start()` |
-| `confirm_timeout_s` | 300 | Trial window before automatic rollback, clamped to [10, 86400] |
-| `manual_confirm` | false | Managed mode. true: you call `simpleota_confirm()` after health checks. Polling mode always needs the call |
-| `disable_auto_reboot` | false | true: you call `simpleota_reboot_for_update()`. No further update is downloaded until then |
-| `signing_keys`, `num_signing_keys` | none | Up to 2 pinned Ed25519 public keys: the dashboard's key id and PEM |
-| `is_connected` | always try | Return false while the link is down. It is polled every second, and the check runs as soon as it returns true |
-| `event_cb`, `user_ctx` | none | Lifecycle events (see [API reference](#api-reference)); `user_ctx` is passed to both callbacks |
-| `cert_pem` | ISRG Root X1 and X2 | Pin a specific CA (or several, concatenated) instead |
-| `crt_bundle_attach` | none | A certificate bundle's attach function, used when `cert_pem` is not set |
+- Fill a [`simpleota_config_t`](https://wassie-dev.github.io/simpleotaclient-core/structsimpleota__config__t.html) from `{}` and call `simpleota_init()` early in `setup()`. Strings are copied. On Arduino, `chip_family` defaults to the chip the sketch is built for, and TLS is verified against the ISRG Root X1 and X2 certificates unless you set `cert_pem`.
+- Managed mode: `simpleota_start()`, `simpleota_stop()`, `simpleota_check_now()`.
+- Polling mode: `simpleota_check()`, then `simpleota_apply()`, from one task of yours, such as `loop()`.
+- Trials: `simpleota_confirm()`, `simpleota_is_trial_boot()`.
+- With `disable_auto_reboot`: `simpleota_reboot_for_update()`.
+- Also `simpleota_set_server_url()`, `simpleota_current_build()`, `simpleota_last_offered_version()` and `simpleota_deinit()`.
+
+`event_cb` runs on the task doing the work: keep it short, and call only `simpleota_reboot_for_update()` from it. The `reason` tokens that events and the dashboard show are listed under [Update lifecycle](#update-lifecycle) and [Rollback](#rollback).
+
+---
+
+## Build options
 
 Build-time knobs, as `-D` flags (PlatformIO `build_flags`; in the Arduino IDE a `build_opt.h` next to the sketch). They have the same names and defaults as the ESP-IDF component's menuconfig options:
 
@@ -216,56 +206,6 @@ Build-time knobs, as `-D` flags (PlatformIO `build_flags`; in the Arduino IDE a 
 The library's sources are C, so a flag must reach the C compiler: `build_flags` and `build_opt.h` both do.
 
 **Retry policy:** check-ins and status posts retry once after a 2-second delay when no response arrives (once only during a trial). They never retry a received HTTP response. The firmware download does not retry; a failure is reported and the next check can try again.
-
----
-
-## API reference
-
-Every function is declared in [`src/simpleota.h`](src/simpleota.h), which has the details.
-
-| Function | Returns | Use |
-|---|---|---|
-| `simpleota_init(&cfg)` | `esp_err_t` | Once, as early as possible in `setup()`: on a trial boot it starts the confirm timeout and the watchdog. `ESP_ERR_INVALID_ARG` for a missing or bad token, an unparseable key or a `base_url` that is not `https://`; `ESP_ERR_INVALID_STATE` when already initialized. |
-| `simpleota_start()` | `esp_err_t` | Managed mode: starts the background task that checks, applies, confirms and reports. Calling it again does nothing. |
-| `simpleota_stop()` | `esp_err_t` | Stops the managed task. It waits up to 60 s for the current step, so a download is never cut short; `ESP_ERR_TIMEOUT` when the task still runs. |
-| `simpleota_check_now()` | `esp_err_t` | Managed mode: wakes the task to check now. |
-| `simpleota_check()` | `bool` | Polling mode: checks in; `true` when an update is offered. `false` while the managed task runs. |
-| `simpleota_apply()` | `simpleota_result_t` | Polling mode: downloads, verifies and flashes the offer from the last check, then reboots unless `disable_auto_reboot` is set. |
-| `simpleota_confirm()` | `esp_err_t` | Ends a trial: the image is kept. `ESP_OK` also when there is no trial; `ESP_FAIL` when the bootloader could not record it, and the trial goes on. |
-| `simpleota_is_trial_boot()` | `bool` | `true` while running an unconfirmed trial image. |
-| `simpleota_reboot_for_update()` | `esp_err_t` | With `disable_auto_reboot`: reports `reboot` and restarts into the waiting update. Returns only when none is waiting (`ESP_ERR_INVALID_STATE`). |
-| `simpleota_set_server_url(url)` | `esp_err_t` | Moves check-ins to another `https://` server, while the managed task is stopped. |
-| `simpleota_current_build()` | `uint32_t` | The build the device reports; 0 before its first update, and before `simpleota_init()`. |
-| `simpleota_last_offered_version()` | `const char *` | The last offer's version label, `""` without one. |
-| `simpleota_deinit()` | `esp_err_t` | Stops the task and frees everything; mainly for tests. |
-
-The functions can be called from any task after init. Polling mode and `simpleota_set_server_url()` belong to one task of the sketch's.
-
-`simpleota_apply()` returns:
-
-| Result | Meaning |
-|---|---|
-| `SIMPLEOTA_OK` (0) | Flashed and verified. With auto-reboot the device restarts before this returns. |
-| `SIMPLEOTA_CHECKSUM_FAIL` (1) | The download did not match its SHA-256. Nothing was made bootable. |
-| `SIMPLEOTA_FLASH_FAIL` (2) | A network, URL, flash or NVS failure. Nothing was made bootable. |
-| `SIMPLEOTA_NO_OFFER` (3) | No offer from a successful `simpleota_check()`, or the managed task runs. |
-| `SIMPLEOTA_SIGNATURE_FAIL` (4) | A required signature is missing or wrong. See [Signed firmware](#signed-firmware). |
-| `SIMPLEOTA_REBOOT_PENDING` (5) | An earlier update waits for `simpleota_reboot_for_update()`. |
-| `SIMPLEOTA_UNCONFIRMED` (6) | The running image is on trial: confirm it, then apply again. The offer is kept. |
-| `SIMPLEOTA_DOWNGRADE` (7) | The offered build is not above the running one. See [Anti-rollback](#anti-rollback). |
-
-`event_cb` gets, from the task doing the work (keep it short, and don't call the library from it):
-
-| Event | `reason` | `build_number` |
-|---|---|---|
-| `SIMPLEOTA_EVENT_CHECK_DONE` | The server's status, such as `up_to_date` | The running build |
-| `SIMPLEOTA_EVENT_UPDATE_AVAILABLE` | | The offered build; `bytes_total` is its size when known |
-| `SIMPLEOTA_EVENT_DOWNLOAD_PROGRESS` | | The offered build; `bytes_done` of `bytes_total` |
-| `SIMPLEOTA_EVENT_UPDATE_FAILED` | The failure reason, as in [Update lifecycle](#update-lifecycle) | The offered build |
-| `SIMPLEOTA_EVENT_BEFORE_REBOOT` | | The flashed build |
-| `SIMPLEOTA_EVENT_TRIAL_BOOT` | | The build on trial |
-| `SIMPLEOTA_EVENT_CONFIRMED` | | The confirmed build, once its report is delivered |
-| `SIMPLEOTA_EVENT_ROLLING_BACK` | Why, such as `confirm_timeout` or `panic` | The build it returns to |
 
 ---
 
@@ -510,7 +450,7 @@ A scheme works for SimpleOTA when its CSV defines both `ota_0` and `ota_1` (see 
 
 A normal Arduino IDE or arduino-cli USB sketch upload uses esptool to write the bootloader, `partitions.bin` at `0x8000`, `boot_app0.bin` at `0xe000`, and the app, so the selected partition scheme is applied. Network OTA, including a SimpleOTA update, writes only the app image, so the scheme cannot be changed over the air. If you are moving off a single-slot scheme, enable *Erase All Flash Before Sketch Upload* for that USB flash (PlatformIO: `pio run -t erase` first) so NVS and stored build numbers reset cleanly. Boards already on a two-slot layout do not need a full erase just to upload a new sketch.
 
-For mixed schemes in one fleet, set [`partition_profile`](#configuration) to matching artifact profiles. A blank `partition_profile` on the artifact or on the device matches any value for that field only; `chip_family`, `board_id`, `framework` and `hardware_revision` still filter offers.
+For mixed schemes in one fleet, set [`partition_profile`](https://wassie-dev.github.io/simpleotaclient-core/structsimpleota__config__t.html) to matching artifact profiles. A blank `partition_profile` on the artifact or on the device matches any value for that field only; `chip_family`, `board_id`, `framework` and `hardware_revision` still filter offers.
 
 ---
 

@@ -5,14 +5,12 @@
 
 #include "SimpleOTAClient.h"
 
-#include <esp_mac.h>
 #include <esp_system.h>
 #include <nvs_flash.h>
 
 #include "sdkconfig.h"
 #include "sota_core/sota_app.h"
 #include "sota_core/sota_sys.h"
-#include "sota_core/sota_time.h"
 #include "sota_core/sota_url.h"
 #include "sota_core/sota_wdt_calc.h"
 
@@ -68,17 +66,10 @@ void sota_app_log(int level, const char* fmt, ...) {
 // Events are not part of this API; check() and apply() return what they mean.
 void sota_app_event(void*, const sota_event_t*) {}
 
-// The confirm timeout ran out, in the esp_timer task. The rollback writes
-// NVS and restarts, so it runs on a task: the managed one, or a short-lived
-// one in polling mode.
-static void sotaServiceTask(void* arg) {
-    sota_engine_service(static_cast<sota_engine_t*>(arg));
-    vTaskDelete(nullptr);
-}
-
+// The confirm timeout ran out, in the esp_timer task: the runner rolls back
+// on its task, or on a short-lived one in polling mode.
 void sota_app_wake(void* user) {
-    SimpleOTAClient* self = static_cast<SimpleOTAClient*>(user);
-    self->wake();
+    sota_runner_wake(&static_cast<SimpleOTAClient*>(user)->_runner);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,17 +138,11 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _insecureWarned(false),
       _managedAutoConfirm(true),
       _download(nullptr),
+      _runner(),
       _onResult(nullptr),
-      _isConnected(nullptr),
-      _initialDelayMs(0),
-      _taskHandle(nullptr),
-      _stopRequested(false) {
+      _isConnected(nullptr) {
     if (!deviceId) {
-        uint8_t mac[6];
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
-        snprintf(_deviceIdBuf, sizeof(_deviceIdBuf),
-                 "%02x:%02x:%02x:%02x:%02x:%02x",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        sota_sys_default_device_id(_deviceIdBuf);
         deviceId = _deviceIdBuf;
     }
     sota_config_t cfg = {};
@@ -228,7 +213,7 @@ void SimpleOTAClient::setRollbackEnabled(bool enabled)        { _engine.cfg.roll
 
 void SimpleOTAClient::setManagedAutoConfirm(bool enabled) {
     _managedAutoConfirm = enabled;
-    if (_taskHandle) _engine.cfg.auto_confirm = enabled;
+    if (_runner.task) _engine.cfg.auto_confirm = enabled;
 }
 
 // Below 10 s leaves no time to debug a trial on the serial console; above
@@ -293,65 +278,42 @@ void SimpleOTAClient::begin(uint32_t checkIntervalSec,
                       void (*onResult)(OTAResult),
                       bool (*isConnected)(),
                       uint32_t initialDelayMs) {
-    if (_taskHandle != nullptr || !setUp("begin")) return;
-    _stopRequested = false;
+    if (_runner.task != nullptr || !setUp("begin")) return;
     _engine.cfg.check_interval_s = checkIntervalSec ? checkIntervalSec : SIMPLEOTA_CHECK_INTERVAL_S;
     _engine.cfg.auto_confirm = _managedAutoConfirm;
-    _initialDelayMs = initialDelayMs;
     _onResult = onResult;
     _isConnected = isConnected;
+    _runner.engine = &_engine;
+    _runner.initial_delay_ms = initialDelayMs;
+    _runner.is_connected = connectedFor;
+    _runner.on_result = resultFor;
+    _runner.ctx = this;
+    _runner.stack_size = 8192;
+    _runner.priority = 1;
     // On the caller's task, so the confirm timer runs before begin() returns.
     sota_engine_validate_boot(&_engine);
-    xTaskCreate(_taskEntry, "simpleota", 8192, this, 1, &_taskHandle);
+    if (!sota_runner_start(&_runner, "simpleota")) SOTA_LOGE("begin: no memory for the task");
 }
 
-// Deleting the task mid-step could cut a flash write short, leak the TLS
-// session, or leave the core's lock held, so it is asked to stop instead.
+// The task stops between steps, so a download or flash write is never cut
+// short.
 void SimpleOTAClient::end() {
-    TaskHandle_t task = _taskHandle;
-    if (task == nullptr) return;
-    _stopRequested = true;
-    if (xTaskGetCurrentTaskHandle() == task) return;
-    xTaskNotifyGive(task);
-    for (uint32_t waited = 0; _taskHandle != nullptr; waited += 10) {
-        if (waited >= 60000) {
-            SOTA_LOGW("end: the task did not stop within 60 s");
-            return;
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-
-void SimpleOTAClient::_taskEntry(void* arg) {
-    static_cast<SimpleOTAClient*>(arg)->_taskLoop();
-}
-
-void SimpleOTAClient::wake() {
-    if (_taskHandle) {
-        xTaskNotifyGive(_taskHandle);
-    } else if (xTaskCreate(sotaServiceTask, "sota_rollback", 4096, &_engine, 5, nullptr) != pdPASS) {
-        SOTA_LOGE("no memory for the rollback task; restarting into the trial again");
-        esp_restart();
-    }
-}
-
-void SimpleOTAClient::_taskLoop() {
-    // The initial delay keeps clear of other TLS sessions starting at boot
-    // (lwIP contention), unless the confirm timeout is already due.
-    if (_initialDelayMs > 0 && !_engine.timeout_pending) {
-        ulTaskNotifyTake(pdTRUE, sota_ms_to_ticks(_initialDelayMs, configTICK_RATE_HZ));
-    }
-    while (!_stopRequested) {
-        const bool connected = !_isConnected || _isConnected();
-        sota_apply_result_t r = SOTA_APPLY_NO_OFFER;  // step() sets it when apply() ran
-        const uint32_t waitSec = sota_engine_step(&_engine, connected, &r);
-        if (r != SOTA_APPLY_NO_OFFER && _onResult) _onResult(static_cast<OTAResult>(r));
-        if (_stopRequested) break;
-        ulTaskNotifyTake(pdTRUE, sota_ms_to_ticks((uint64_t)waitSec * 1000u, configTICK_RATE_HZ));
+    if (_runner.task == nullptr) return;
+    if (!sota_runner_stop(&_runner, 60000)) {
+        SOTA_LOGW("end: the task did not stop within 60 s");
+        return;
     }
     _engine.cfg.auto_confirm = false;
-    _taskHandle = nullptr;
-    vTaskDelete(nullptr);
+}
+
+bool SimpleOTAClient::connectedFor(void* self) {
+    auto* client = static_cast<SimpleOTAClient*>(self);
+    return !client->_isConnected || client->_isConnected();
+}
+
+void SimpleOTAClient::resultFor(sota_apply_result_t result, void* self) {
+    auto* client = static_cast<SimpleOTAClient*>(self);
+    if (client->_onResult) client->_onResult(static_cast<OTAResult>(result));
 }
 
 // ---------------------------------------------------------------------------

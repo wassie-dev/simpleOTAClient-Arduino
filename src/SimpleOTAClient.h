@@ -10,12 +10,12 @@
 
 #include <Arduino.h>
 #include <stdint.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
 #include "sota_core/sota_app.h"
 #include "sota_core/sota_engine.h"
 #include "sota_core/sota_net.h"
+#include "sota_core/sota_runner.h"
+#include "sota_core/sota_sys.h"
 
 // ---------------------------------------------------------------------------
 // Compile-time configuration. Override with -D or a #define before #include.
@@ -531,22 +531,19 @@ public:
 private:
     sota_engine_t _engine;         ///< The shared core; borrows the strings below.
     bool          _engineOk;       ///< The core accepted the set-up.
-    char          _deviceIdBuf[18];  ///< Storage for the auto-generated MAC address.
+    char          _deviceIdBuf[SOTA_DEVICE_ID_LEN];  ///< The default device ID.
     const char*   _caCert;         ///< nullptr = setInsecure().
     bool          _insecureWarned;
     bool          _managedAutoConfirm;
     void*         _download;       ///< The open firmware download (SimpleOTANet.cpp).
 
-    // Managed-mode state.
-    void       (*_onResult)(OTAResult);
-    bool       (*_isConnected)();
-    uint32_t     _initialDelayMs;
-    TaskHandle_t _taskHandle;
-    volatile bool _stopRequested;   ///< end() asked the task to stop.
-    static void  _taskEntry(void* arg);
-    void         _taskLoop();
+    // Managed mode: the core's task.
+    sota_runner_t _runner;
+    void        (*_onResult)(OTAResult);
+    bool        (*_isConnected)();
+    static bool  connectedFor(void* self);
+    static void  resultFor(sota_apply_result_t result, void* self);
     bool         setUp(const char* caller);  ///< _engineOk, with a warning when false.
-    void         wake();  ///< The confirm timeout fired: get the rollback onto a task.
 
     friend void sota_app_wake(void* user);
     friend int  sota_net_post(void* user, const char* url, const char* token,

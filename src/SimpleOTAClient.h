@@ -192,9 +192,11 @@ public:
      * which covers both the SimpleOTA API and its firmware storage. Call this
      * only if you need to pin a different certificate.
      *
-     * @param pemRootCA  PEM-encoded root CA certificate. Pass nullptr to disable
-     *                   TLS verification entirely (development only; emits a
-     *                   one-shot Serial warning).
+     * TLS is always verified. For a local server, give it a certificate from
+     * your own CA and pass that CA here.
+     *
+     * @param pemRootCA  PEM-encoded root CA certificate. nullptr is ignored,
+     *                   with a warning.
      */
     void setCACert(const char* pemRootCA);
 
@@ -530,7 +532,7 @@ public:
     /**
      * @brief PEM bundle covering simpleota.com and its pre-signed object-storage host.
      *
-     * Pass to setCACert() to opt into verified TLS.
+     * The default for setCACert().
      */
     static const char* kSimpleOtaRootCA;
 
@@ -568,8 +570,7 @@ private:
     sota_engine_t _engine;         ///< The shared core; borrows the strings below.
     bool          _engineOk;       ///< The core accepted the set-up.
     char          _deviceIdBuf[SOTA_DEVICE_ID_LEN];  ///< The default device ID.
-    const char*   _caCert;         ///< nullptr = setInsecure().
-    bool          _insecureWarned;
+    const char*   _caCert;         ///< Never nullptr: TLS is always verified.
     bool          _managedAutoConfirm;
     void*         _download;       ///< The open firmware download (SimpleOTANet.cpp).
 

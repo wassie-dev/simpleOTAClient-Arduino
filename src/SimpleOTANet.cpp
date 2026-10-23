@@ -24,28 +24,13 @@ struct Download {
     uint32_t lastByteAt;  ///< millis() of the last progress.
 };
 
-// Without a CA the connection is unverified, which deserves a warning even
-// with logging off: a device then flashes whatever a server hands it.
-void useTrust(SimpleOtaTLSClient& tls, const char* caCert, bool& warned) {
-    if (caCert) {
-        tls.setCACert(caCert);
-        return;
-    }
-    tls.setInsecure();
-    if (!warned) {
-        warned = true;
-        SOTA_LOGW("TLS verification disabled. Call "
-                  "setCACert(SimpleOTAClient::kSimpleOtaRootCA) for production.");
-    }
-}
-
 }  // namespace
 
 int sota_net_post(void* user, const char* url, const char* token, const char* body,
                   char* resp, size_t cap) {
     SimpleOTAClient* self = static_cast<SimpleOTAClient*>(user);
     SimpleOtaTLSClient tls;
-    useTrust(tls, self->_caCert, self->_insecureWarned);
+    tls.setCACert(self->_caCert);
     HTTPClient http;
     http.setTimeout(SIMPLEOTA_TIMEOUT_MS);
     if (!http.begin(tls, url)) return -1;
@@ -65,7 +50,7 @@ int sota_net_dl_open(void* user, const char* url, int64_t* len, char* location,
     SimpleOTAClient* self = static_cast<SimpleOTAClient*>(user);
     Download* d = new (std::nothrow) Download();
     if (!d) return 0;
-    useTrust(d->tls, self->_caCert, self->_insecureWarned);
+    d->tls.setCACert(self->_caCert);
     d->http.setTimeout(SIMPLEOTA_TIMEOUT_MS);
     d->http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     static const char* kLocation[] = {"Location"};

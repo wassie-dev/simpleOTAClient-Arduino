@@ -262,7 +262,7 @@ Events emitted automatically by `apply()`: `download_started`, `downloaded`, `fl
 
 ### `void setCACert(const char* pemRootCA)`
 
-Overrides the CA certificate used for HTTPS verification. By default the library uses the bundled `kSimpleOtaRootCA` (ISRG Root X1), which covers both the SimpleOTA API and its firmware storage. Call this only if you need to pin a different certificate.
+Overrides the CA certificate used for HTTPS verification. By default the library uses the bundled `kSimpleOtaRootCA` (ISRG Root X1), which covers both the SimpleOTA API and its firmware storage. Call this only if you need to pin a different certificate, such as your own CA for a local server. `nullptr` is ignored with a warning: TLS is always verified.
 
 ---
 
@@ -480,15 +480,11 @@ The integrity guarantee of this library rests on the SHA-256 `checksum` field fr
 
 The library defaults to verifying TLS using the bundled ISRG Root X1 root CA (`kSimpleOtaRootCA`). This covers both the SimpleOTA API and the firmware download endpoint. No additional configuration is needed for production.
 
-### Disabling TLS verification
+### TLS is always verified
 
-Passing `nullptr` to `setCACert()` switches to `WiFiClientSecure::setInsecure()`, disabling certificate verification entirely. The library will emit a one-shot `Serial` warning whenever a request is made in this mode:
+There is no way to turn verification off. `setCACert(nullptr)` keeps the current CA and prints a warning.
 
-```
-[SimpleOTAClient] WARNING: TLS verification disabled. Call setCACert(SimpleOTAClient::kSimpleOtaRootCA) for production.
-```
-
-This mode exists only to simplify local development. **Do not use it in production.**
+To test against a local server, issue it a certificate from your own CA (for example with `mkcert`) for the hostname or IP the device connects to. For an IP, put it in the subjectAltName. Then pass that CA to `setCACert()`. The ESP-IDF client works the same way with `cert_pem`.
 
 ### Other hardening built into the library
 
@@ -675,7 +671,7 @@ All messages are prefixed with `[SimpleOTAClient]` and written via `Serial.print
 
 The runtime toggle is the recommended path. A compile-time default also exists: build with `-DSIMPLEOTA_DEBUG=1` to make logging on by default. (A `#define SIMPLEOTA_DEBUG 1` placed in your sketch will **not** work, because the library's `.cpp` is compiled in a separate translation unit that doesn't see sketch-level defines. Use `setDebug(true)` or a real build flag.)
 
-Warnings, such as the insecure-TLS one or a rejected token, always print on `Serial`, regardless of this setting.
+Warnings, such as a rejected token, always print on `Serial`, regardless of this setting.
 
 ---
 
@@ -725,7 +721,7 @@ The figures below come from building examples/SignedOTA with arduino-cli 1.5.1 a
 | `OTA_CHECKSUM_FAIL` | The firmware object was replaced or corrupted on the server between the `/check/` response and the download. |
 | Device is offered the same build repeatedly | The `simpleota`/`sota_build` NVS key was cleared or overwritten. See [Build numbers](#build-numbers). A `current_build_number` of `0` always matches a pending deployment, so a wiped NVS will keep re-offering the same build. |
 | Download stalls or times out | Weak Wi-Fi signal, or `SIMPLEOTA_TIMEOUT_MS` is too short for the link speed and firmware size. Increase the timeout or improve signal quality. |
-| `[SimpleOTAClient] WARNING: TLS verification disabled` | `setCACert(nullptr)` was called. Only use insecure mode during local development. See [Security](#security). |
+| `[SimpleOTAClient] WARNING: setCACert: TLS is always verified; keeping the current CA` | `setCACert(nullptr)` was called. Verification can't be turned off. See [Security](#security). |
 
 ---
 

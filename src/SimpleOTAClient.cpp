@@ -142,7 +142,6 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _engineOk(false),
       _deviceIdBuf{},
       _caCert(SimpleOTAClient::kSimpleOtaRootCA),
-      _insecureWarned(false),
       _managedAutoConfirm(true),
       _download(nullptr),
       _runner(),
@@ -187,7 +186,12 @@ bool SimpleOTAClient::setServerUrl(const char* url) {
 }
 
 void SimpleOTAClient::onEvent(void (*callback)(const OTAEventInfo&)) { _onEvent = callback; }
-void SimpleOTAClient::setCACert(const char* pemRootCA)        { _caCert = pemRootCA; }
+// TLS is always verified: without its server's certificate a device flashes
+// whatever an on-path attacker hands it.
+void SimpleOTAClient::setCACert(const char* pemRootCA) {
+    if (!pemRootCA) SOTA_LOGW("setCACert: TLS is always verified; keeping the current CA");
+    else _caCert = pemRootCA;
+}
 void SimpleOTAClient::setAutoReboot(bool enabled)             { _engine.cfg.auto_reboot = enabled; }
 void SimpleOTAClient::setPartitionProfile(const char* profile){ _engine.cfg.device.partition_profile = profile; }
 void SimpleOTAClient::setNvsSchemaVersion(uint8_t version)    { _engine.cfg.device.nvs_schema_version = version; }

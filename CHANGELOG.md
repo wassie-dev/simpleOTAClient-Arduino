@@ -8,6 +8,7 @@
 
 ### Changed
 
+- **Breaking:** TLS is always verified. `setCACert(nullptr)` no longer turns verification off: it keeps the current CA and prints a warning. For a local server, pass your own CA to `setCACert()`. The ESP-IDF client never had an insecure mode.
 - The update logic is now the shared SimpleOTAClient-core, copied into `src/sota_core`, so the protocol, the trial record in NVS and the rollback rules are the ESP-IDF client's. The public API is unchanged, and so is the NVS layout.
 - About 9 KB less flash for the examples (core 2.0.17, ESP32).
 - With `-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK`, the chip watchdog still runs, and the library rolls back a trial itself, as the bootloader would: on any reset before `confirmRunning()` (a crash, a watchdog, a brownout, a power loss, `ESP.restart()` or deep sleep). A rollback cut short by a power loss is finished on the next boot.

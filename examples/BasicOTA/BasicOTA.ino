@@ -49,8 +49,8 @@ void setup() {
     // the factory-installed image is also visible from boot zero.
     ota.setVersionLabel(FIRMWARE_VERSION);
 
-    // TLS is verified by default against the bundled ISRG Root X1 root CA.
-    // Call ota.setCACert(nullptr) to disable verification (development only).
+    // TLS is always verified, by default against the bundled ISRG Root X1
+    // root CA. For a local server, pass your own CA to ota.setCACert().
 }
 
 void loop() {

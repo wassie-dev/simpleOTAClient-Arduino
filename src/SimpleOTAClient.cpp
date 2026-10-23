@@ -176,6 +176,11 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
     _engineOk = sota_engine_init(&_engine, &cfg);
 }
 
+SimpleOTAClient::~SimpleOTAClient() {
+    end();
+    sota_engine_deinit(&_engine);
+}
+
 bool SimpleOTAClient::setServerUrl(const char* url) {
     const sota_url_status_t status = sota_validate_server_url(url);
     if (status != SOTA_URL_OK) {
@@ -235,15 +240,21 @@ void SimpleOTAClient::setConfirmTimeout(uint32_t seconds) {
 
 const char* SimpleOTAClient::lastOfferedVersion() const { return _engine.offer.version; }
 
+// Construction runs before Serial is up, so a refused set-up is reported here.
+bool SimpleOTAClient::setUp(const char* caller) {
+    if (!_engineOk) {
+        SOTA_LOGW("%s: not set up. The token has control characters, the server URL "
+                  "is unusable, or another SimpleOTAClient exists", caller);
+    }
+    return _engineOk;
+}
+
 // ---------------------------------------------------------------------------
 // Polling API
 // ---------------------------------------------------------------------------
 
 bool SimpleOTAClient::check() {
-    if (!_engineOk) {
-        SOTA_LOGW("check: the token has control characters, or the server URL is unusable");
-        return false;
-    }
+    if (!setUp("check")) return false;
     return sota_engine_check(&_engine);
 }
 
@@ -281,7 +292,7 @@ void SimpleOTAClient::begin(uint32_t checkIntervalSec,
                       void (*onResult)(OTAResult),
                       bool (*isConnected)(),
                       uint32_t initialDelayMs) {
-    if (_taskHandle != nullptr) return;
+    if (_taskHandle != nullptr || !setUp("begin")) return;
     _engine.cfg.check_interval_s = checkIntervalSec ? checkIntervalSec : SIMPLEOTA_CHECK_INTERVAL_S;
     _engine.cfg.auto_confirm = _managedAutoConfirm;
     _initialDelayMs = initialDelayMs;

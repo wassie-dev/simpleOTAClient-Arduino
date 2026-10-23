@@ -90,6 +90,10 @@ enum OTAResult {
  * Provides check/apply firmware update mechanics, optional lifecycle event
  * reporting, a trial-install/rollback subsystem, and on-device Ed25519
  * firmware signature verification for signed artifacts.
+ *
+ * A device runs one instance: the trial record and the boot slot are the
+ * device's. A second instance, while the first exists, does nothing, and its
+ * check() prints why.
  */
 class SimpleOTAClient {
 public:
@@ -113,6 +117,13 @@ public:
                     const char* deviceId         = nullptr,
                     const char* boardId          = nullptr,
                     const char* hardwareRevision = nullptr);
+
+    /// Stops the managed task and lets another instance run.
+    ~SimpleOTAClient();
+
+    // The core keeps a pointer to this instance, so it cannot be copied.
+    SimpleOTAClient(const SimpleOTAClient&) = delete;
+    SimpleOTAClient& operator=(const SimpleOTAClient&) = delete;
 
     /**
      * @brief Poll /api/v1/ota/check/ for a firmware update.
@@ -516,7 +527,7 @@ public:
 
 private:
     sota_engine_t _engine;         ///< The shared core; borrows the strings below.
-    bool          _engineOk;       ///< The token and server URL passed the core's checks.
+    bool          _engineOk;       ///< The core accepted the set-up.
     char          _deviceIdBuf[18];  ///< Storage for the auto-generated MAC address.
     const char*   _caCert;         ///< nullptr = setInsecure().
     bool          _insecureWarned;
@@ -530,6 +541,7 @@ private:
     TaskHandle_t _taskHandle;
     static void  _taskEntry(void* arg);
     void         _taskLoop();
+    bool         setUp(const char* caller);  ///< _engineOk, with a warning when false.
     void         wake();  ///< The confirm timeout fired: get the rollback onto a task.
 
     friend void sota_app_wake(void* user);

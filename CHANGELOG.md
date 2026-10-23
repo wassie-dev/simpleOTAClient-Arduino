@@ -6,7 +6,10 @@
 
 - The update logic is now the shared SimpleOTAClient-core, copied into `src/sota_core`, so the protocol, the trial record in NVS and the rollback rules are the ESP-IDF client's. The public API is unchanged, and so is the NVS layout.
 - About 9 KB less flash for the examples (core 2.0.17, ESP32).
-- With `-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK`, the chip watchdog still runs, and a trial that boots after a panic or watchdog reset, or wakes from deep sleep, is rolled back by the library.
+- With `-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK`, the chip watchdog still runs, and the library rolls back a trial itself, as the bootloader would: on any reset before `confirmRunning()` (a crash, a watchdog, a brownout, a power loss, `ESP.restart()` or deep sleep). A rollback cut short by a power loss is finished on the next boot.
+- One `SimpleOTAClient` runs at a time: a second instance does nothing, and its `check()` and `begin()` print why. The class cannot be copied, and its destructor stops the managed task.
+- The update slot is erased as the download is written, not all at once before it, and an image larger than the slot is refused before the download.
+- Server responses are read from their top-level fields only, and numbers too large for 32 bits are refused.
 - A trial that boots after a panic or watchdog reset is rolled back, also when the bootloader resumed it.
 - The watchdog margin grows with `SIMPLEOTA_TIMEOUT_MS`, so a trial can finish its current request and roll back first. `SIMPLEOTA_TRIAL_WDT_MARGIN_S` is gone, and `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` is fixed at 10 s.
 - Firmware downloads follow up to three redirects.

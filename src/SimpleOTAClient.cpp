@@ -150,7 +150,8 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _onResult(nullptr),
       _isConnected(nullptr),
       _initialDelayMs(0),
-      _taskHandle(nullptr) {
+      _taskHandle(nullptr),
+      _stopRequested(false) {
     if (!deviceId) {
         uint8_t mac[6];
         esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -293,6 +294,7 @@ void SimpleOTAClient::begin(uint32_t checkIntervalSec,
                       bool (*isConnected)(),
                       uint32_t initialDelayMs) {
     if (_taskHandle != nullptr || !setUp("begin")) return;
+    _stopRequested = false;
     _engine.cfg.check_interval_s = checkIntervalSec ? checkIntervalSec : SIMPLEOTA_CHECK_INTERVAL_S;
     _engine.cfg.auto_confirm = _managedAutoConfirm;
     _initialDelayMs = initialDelayMs;
@@ -303,11 +305,21 @@ void SimpleOTAClient::begin(uint32_t checkIntervalSec,
     xTaskCreate(_taskEntry, "simpleota", 8192, this, 1, &_taskHandle);
 }
 
+// Deleting the task mid-step could cut a flash write short, leak the TLS
+// session, or leave the core's lock held, so it is asked to stop instead.
 void SimpleOTAClient::end() {
-    if (_taskHandle == nullptr) return;
-    vTaskDelete(_taskHandle);
-    _taskHandle = nullptr;
-    _engine.cfg.auto_confirm = false;
+    TaskHandle_t task = _taskHandle;
+    if (task == nullptr) return;
+    _stopRequested = true;
+    if (xTaskGetCurrentTaskHandle() == task) return;
+    xTaskNotifyGive(task);
+    for (uint32_t waited = 0; _taskHandle != nullptr; waited += 10) {
+        if (waited >= 60000) {
+            SOTA_LOGW("end: the task did not stop within 60 s");
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 }
 
 void SimpleOTAClient::_taskEntry(void* arg) {
@@ -329,13 +341,17 @@ void SimpleOTAClient::_taskLoop() {
     if (_initialDelayMs > 0 && !_engine.timeout_pending) {
         ulTaskNotifyTake(pdTRUE, sota_ms_to_ticks(_initialDelayMs, configTICK_RATE_HZ));
     }
-    for (;;) {
+    while (!_stopRequested) {
         const bool connected = !_isConnected || _isConnected();
         sota_apply_result_t r = SOTA_APPLY_NO_OFFER;  // step() sets it when apply() ran
         const uint32_t waitSec = sota_engine_step(&_engine, connected, &r);
         if (r != SOTA_APPLY_NO_OFFER && _onResult) _onResult(static_cast<OTAResult>(r));
+        if (_stopRequested) break;
         ulTaskNotifyTake(pdTRUE, sota_ms_to_ticks((uint64_t)waitSec * 1000u, configTICK_RATE_HZ));
     }
+    _engine.cfg.auto_confirm = false;
+    _taskHandle = nullptr;
+    vTaskDelete(nullptr);
 }
 
 // ---------------------------------------------------------------------------

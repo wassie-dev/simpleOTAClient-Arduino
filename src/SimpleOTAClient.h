@@ -484,7 +484,10 @@ public:
     /**
      * @brief Stop the managed-mode background task started by begin().
      *
-     * @warning Do not call while a firmware flash is in progress.
+     * The task stops between steps, so a download or flash write is never
+     * cut short: this waits for the current step, up to a minute. Called
+     * from the task itself (an onResult callback), it returns at once and
+     * the task stops after the callback.
      */
     void end();
 
@@ -539,6 +542,7 @@ private:
     bool       (*_isConnected)();
     uint32_t     _initialDelayMs;
     TaskHandle_t _taskHandle;
+    volatile bool _stopRequested;   ///< end() asked the task to stop.
     static void  _taskEntry(void* arg);
     void         _taskLoop();
     bool         setUp(const char* caller);  ///< _engineOk, with a warning when false.

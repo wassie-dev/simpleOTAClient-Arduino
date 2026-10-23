@@ -145,6 +145,10 @@ void setup() {
                 // This firmware is still on trial: confirm it first.
                 Serial.println("[app] confirm the running firmware before updating");
                 break;
+            case OTA_DOWNGRADE:
+                // The server offered a build that is not newer: refused.
+                Serial.println("[app] older build refused");
+                break;
             case OTA_REBOOT_PENDING:
                 // An earlier apply() flashed an update that waits for
                 // rebootForUpdate().

@@ -86,7 +86,8 @@ enum OTAResult {
     OTA_NO_OFFER       = 3,  ///< apply() called without a successful preceding check().
     OTA_SIGNATURE_FAIL = 4,  ///< Ed25519 signature verification failed; image rejected before it was marked bootable.
     OTA_REBOOT_PENDING = 5,  ///< An update is flashed and waits for rebootForUpdate() (setAutoReboot(false)). Nothing was downloaded.
-    OTA_UNCONFIRMED    = 6   ///< The running image is on trial. Call confirm(), then apply() again. The offer is kept.
+    OTA_UNCONFIRMED    = 6,  ///< The running image is on trial. Call confirm(), then apply() again. The offer is kept.
+    OTA_DOWNGRADE      = 7   ///< The offered build is not above the running one; refused (anti-rollback).
 };
 
 /**

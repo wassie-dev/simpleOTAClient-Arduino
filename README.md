@@ -237,6 +237,7 @@ Executes the offer stored by the most recent successful `check()`.
 | `OTA_NO_OFFER` | `check()` had not been called or returned `false`. |
 | `OTA_SIGNATURE_FAIL` | Ed25519 signature verification failed for a signed artifact. Partition was **not** committed; a `failed` event with reason `signature_invalid` was reported. Treat as a security signal, not flakiness. See [Signed firmware](#signed-firmware). |
 | `OTA_UNCONFIRMED` | The running firmware is on trial and has not been confirmed. Nothing was downloaded or reported, because the other slot holds the previous firmware the trial may still return to. Call `confirm()`, then `apply()` again; the offer is kept. |
+| `OTA_DOWNGRADE` | The offered build number is not above the running one. Nothing was downloaded, and a `failed` event with reason `downgrade_refused` was reported. See [Security](#security). |
 | `OTA_REBOOT_PENDING` | With `setAutoReboot(false)`, an earlier `apply()` flashed an update that is waiting for its reboot. Nothing was downloaded or reported, because the next update slot holds the waiting image. Call `rebootForUpdate()` to install it. |
 
 > **Note on `validated`:** this event is reported after `Update.end()` succeeds (meaning "the image was flashed cleanly"), not after a successful boot. A subsequent `reboot` event is emitted immediately before `esp_restart()` on the auto-reboot path; a `confirmed` event follows once the trial is confirmed (see [Rollback](#rollback)).
@@ -456,6 +457,7 @@ On failure at any stage, a `failed` event is reported with a short reason token 
 
 | Reason token | Stage |
 | --- | --- |
+| `downgrade_refused` | The offered build is not above the running one |
 | `insecure_url` | URL did not begin with `https://` |
 | `https_begin_failed` | Could not open HTTPS connection to download URL |
 | `http_status_<N>` | Server returned non-200 for the firmware GET, or a fourth redirect |
@@ -493,6 +495,7 @@ To test against a local server, issue it a certificate from your own CA (for exa
 
 ### Other hardening built into the library
 
+- Anti-rollback: an offer whose build number is not above the running build is refused (`downgrade_refused`), because an old image's signature still verifies and old builds can carry fixed bugs. To go back, release the old code under a new, higher build number. The running build is the one stored with the image SimpleOTA installed; an image flashed some other way, such as over serial, reports build 0, so a device reused for another project takes that project's builds.
 - Download URLs that don't begin with `https://` are rejected before any connection is made.
 - Project tokens containing CR/LF or control characters are rejected to prevent HTTP header injection.
 - The library never retries a received HTTP response; only transport-level failures trigger a retry. This prevents fleet-scale retry storms.

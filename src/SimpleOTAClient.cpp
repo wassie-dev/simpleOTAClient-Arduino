@@ -30,7 +30,8 @@ static_assert(OTA_SUCCESS == (int)SOTA_APPLY_OK &&
               OTA_NO_OFFER == (int)SOTA_APPLY_NO_OFFER &&
               OTA_SIGNATURE_FAIL == (int)SOTA_APPLY_SIGNATURE_FAIL &&
               OTA_REBOOT_PENDING == (int)SOTA_APPLY_REBOOT_PENDING &&
-              OTA_UNCONFIRMED == (int)SOTA_APPLY_UNCONFIRMED,
+              OTA_UNCONFIRMED == (int)SOTA_APPLY_UNCONFIRMED &&
+              OTA_DOWNGRADE == (int)SOTA_APPLY_DOWNGRADE,
               "OTAResult matches sota_apply_result_t");
 
 // ---------------------------------------------------------------------------

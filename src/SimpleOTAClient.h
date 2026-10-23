@@ -12,10 +12,10 @@
 #include <stdint.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <freertos/timers.h>
-#include <freertos/semphr.h>
 
-#include "SimpleOTAOutbox.h"
+#include "sota_core/sota_app.h"
+#include "sota_core/sota_engine.h"
+#include "sota_core/sota_net.h"
 
 // ---------------------------------------------------------------------------
 // Compile-time configuration. Override with -D or a #define before #include.
@@ -57,16 +57,14 @@
 #define SIMPLEOTA_CONFIRM_TIMEOUT_S 300
 #endif
 
-#ifndef SIMPLEOTA_TRIAL_RETRY_INTERVAL_S
 /**
  * @brief check() retry interval in seconds during a TRIAL boot (managed mode).
  *
  * Instead of the normal checkIntervalSec, the managed task retries on this
  * shorter interval until a successful server response is received or the
- * confirm timeout expires.
+ * confirm timeout expires. Fixed by the shared core.
  */
-#define SIMPLEOTA_TRIAL_RETRY_INTERVAL_S 10
-#endif
+#define SIMPLEOTA_TRIAL_RETRY_INTERVAL_S SOTA_TRIAL_RETRY_INTERVAL_S
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -147,8 +145,8 @@ public:
      *
      * @param event   Event name string (e.g. "reboot").
      * @param reason  Optional reason string. nullptr = field omitted.
-     * @return true on HTTP 2xx with "accepted": true; false otherwise, or if
-     *         no deployment context is available.
+     * @return true on HTTP 2xx; false otherwise, or if no deployment
+     *         context is available.
      */
     bool report(const char* event, const char* reason = nullptr);
 
@@ -354,7 +352,8 @@ public:
     // A crash or reset before confirmRunning(), even in a global constructor,
     // makes the bootloader return to the previous partition, and a hang from
     // setup() onwards is reset by the chip watchdog. Building with
-    // SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK leaves only the confirm timer.
+    // SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK leaves the rollback to the
+    // library, which then misses a crash before its first call.
     // See the README's Rollback and Limitations sections.
     // ------------------------------------------------------------------
 
@@ -364,9 +363,8 @@ public:
      * Default: true.
      *
      * When set to false, apply() behaves as it did pre-0.2.0: write the new
-     * image, reboot, and never look back. A device already in a TRIAL boot
-     * from a previous apply() will still complete that trial regardless of
-     * this flag, to avoid stranding fleets when the setting is changed.
+     * image, reboot, and never look back. A device that boots into a new
+     * image while this is false accepts it and reports it confirmed.
      *
      * @param enabled  true = rollback enabled (default); false = no trial state.
      */
@@ -517,104 +515,29 @@ public:
     static bool _debugEnabled;
 
 private:
-    // Configuration (not owned; caller must keep strings valid).
-    const char* _token;
-    const char* _deviceId;
-    char        _deviceIdBuf[18];  ///< Storage for the auto-generated MAC address.
-    const char* _chipFamily;
-    const char* _boardId;
-    const char* _hwRev;
-    const char* _partitionProfile;
-    uint8_t     _nvsSchemaVersion;
-    const char* _labels;           ///< Pre-formed JSON object string, or nullptr.
-    const char* _securityMode;
-    const char* _versionLabel;     ///< nullptr = read from NVS.
-    const char* _channel;          ///< nullptr = field omitted.
-    const char* _serverUrl;        ///< Check and status only. Not locked. Not used for downloads.
-    const char* _caCert;           ///< nullptr = setInsecure().
-    bool        _autoReboot;
-
-    // Pending offer from check(). _hasOffer guards apply().
-    bool     _hasOffer;
-    String   _url;
-    String   _checksum;            ///< Lowercase hex SHA-256.
-    uint32_t _size;
-    String   _deploymentId;
-    uint32_t _buildNumber;
-    String   _offeredVersion;      ///< Version label from the last check() offer.
-    bool     _offerSigned;         ///< Offer's security_mode == "signed".
-    bool     _offerHasSignature;   ///< _signature holds a decoded usable signature.
-    uint8_t  _signature[64];       ///< Raw Ed25519 signature from the offer.
-    String   _sigKeyId;            ///< signing_key_id from the offer (may be empty).
-
-    // Pinned signing keys (compiled into the sketch; copied at set time).
-    static const uint8_t kMaxSigningKeys = 2;
-    uint8_t  _signingKeys[kMaxSigningKeys][32];
-    String   _signingKeyIds[kMaxSigningKeys];
-    uint8_t  _numSigningKeys;
-
-    // Trial-install / rollback state.
-    bool          _rollbackEnabled;
+    sota_engine_t _engine;         ///< The shared core; borrows the strings below.
+    bool          _engineOk;       ///< The token and server URL passed the core's checks.
+    char          _deviceIdBuf[18];  ///< Storage for the auto-generated MAC address.
+    const char*   _caCert;         ///< nullptr = setInsecure().
+    bool          _insecureWarned;
     bool          _managedAutoConfirm;
-    uint32_t      _confirmTimeoutSec;
-    bool          _bootValidated;      ///< processBootValidation() has run this boot.
-    bool          _inTrial;            ///< This boot is an unconfirmed new image.
-    bool          _trialEnding;        ///< confirmRunning() or the confirm timer has claimed the end of the trial.
-    bool          _timeoutMissed;      ///< The confirm timer fired while confirmRunning() held the claim.
-    portMUX_TYPE  _trialMux;           ///< Guards _inTrial, _trialEnding and _timeoutMissed for claimTrialEnd().
-    SotaOutbox    _outbox;             ///< confirmed / rolled_back reports waiting to be sent.
-    StaticSemaphore_t _outboxLockBuf;
-    SemaphoreHandle_t _outboxLock;     ///< Guards _outbox: the app task and the managed task both use it.
-    TimerHandle_t _confirmTimer;
-    bool          _lastCheckOk;        ///< Set true inside check() on a 200 from /check/.
-    static void   _confirmTimerCb(TimerHandle_t t);
-    bool          claimTrialEnd(bool fromTimer);
-
-    // Internal helpers (defined in .cpp).
-    bool _insecureWarned;
-    bool _authWarned;   ///< One-shot warning emitted on the first 401/403 from the server.
-    int  postJson(const char* path, const String& body, String* outResp);
-    bool sendStatus(const char* event, const char* reason);
-    int  postStatus(const char* event, const char* reason,
-                    const char* deploymentId, uint32_t buildNumber, String* outResp);
-    bool sendStatusFor(const char* event, const char* reason,
-                       const char* deploymentId, uint32_t buildNumber);
-    uint32_t readBuildNumber();
-    void     writeBuildNumber(uint32_t n);
-    String   readHashFromNvs();
-    void     writeHashToNvs(const char* hex);
-    String   readVersionFromNvs();
-    void     writeVersionToNvs(const char* version);
-    void     clearOffer();
-    void     warnInsecureOnce();
-    void     warnUnverifiedSigned();  ///< Warn (per apply) that a signed offer is applied unverified.
-
-    // Rollback internals.
-    void processBootValidation();
-    bool stageTrialRecord(const char* newHash);  ///< Save the trial record before the slot switch.
-    void abandonTrialRecord(bool restoreIdentity); ///< Drop a staged record whose switch will not happen.
-    void unstageTrialRecord();         ///< The slot switch happened.
-    void dropTrialRecord();            ///< Remove the trial record and its report context.
-    void saveConfirmContext();         ///< Rollback disabled: context for the confirmed report.
-    void restorePreviousIdentity();    ///< Back on the previous image: restore its build/hash/version.
-    void performRollback(const char* reason);  ///< Switch back to the previous image and reboot; reason goes in the rolled_back report.
-    void startTrial(bool staged, const char* deploymentId, uint32_t build); ///< First boot of the new image.
-    void armTrialWatchdog();           ///< Restart the chip watchdog for this trial.
-    void loadOutbox();
-    void saveOutbox();
-    void queueReport(const char* event, const char* reason,
-                     const char* deploymentId, uint32_t build);
-    void sendPendingReports();         ///< Send queued reports; keep any that got no response.
+    void*         _download;       ///< The open firmware download (SimpleOTANet.cpp).
 
     // Managed-mode state.
-    uint32_t     _checkIntervalSec;
-    uint32_t     _initialDelayMs;
     void       (*_onResult)(OTAResult);
     bool       (*_isConnected)();
+    uint32_t     _initialDelayMs;
     TaskHandle_t _taskHandle;
     static void  _taskEntry(void* arg);
     void         _taskLoop();
-    bool         _trialLoop();  ///< Managed-mode loop while _inTrial. True when it confirmed on its own check.
+    void         wake();  ///< The confirm timeout fired: get the rollback onto a task.
+
+    friend void sota_app_wake(void* user);
+    friend int  sota_net_post(void* user, const char* url, const char* token,
+                              const char* body, char* resp, size_t cap);
+    friend int  sota_net_dl_open(void* user, const char* url, int64_t* len);
+    friend int  sota_net_dl_read(void* user, uint8_t* buf, size_t cap);
+    friend void sota_net_dl_close(void* user);
 };
 
 #endif  // SIMPLEOTACLIENT_H

@@ -56,7 +56,7 @@ Starting a new project? [simpleOTA-starter-arduino](https://github.com/wassie-de
 - **Status event reporting:** reports the full update lifecycle back to the SimpleOTA backend.
 - **On-device firmware signature verification:** signed artifacts are verified against your pinned Ed25519 public key, streamed during download, before the image is ever marked bootable. See [Signed firmware](#signed-firmware).
 - **Trial install with timeout-based rollback:** the library records the previous image before switching to the new one, then rolls back to it if the new image crashes, hangs, or does not call `confirmRunning()` within the configurable timeout. See [Rollback](#rollback).
-- **No external dependencies:** uses libraries bundled with the Arduino-ESP32 core (`HTTPClient`, `Update`, `NetworkClientSecure` / `WiFiClientSecure`, `Preferences`, `mbedtls`), plus a vendored copy of [Monocypher](https://monocypher.org) 3.1.3 for Ed25519; nothing to install.
+- **No external dependencies:** uses `HTTPClient` and `NetworkClientSecure` / `WiFiClientSecure` from the Arduino-ESP32 core, and ESP-IDF's OTA and NVS APIs. The update logic is [SimpleOTAClient-core](https://github.com/wassie-dev/simpleOTAClient-core), shared with the ESP-IDF client and copied into `src/sota_core`, with a vendored copy of [Monocypher](https://monocypher.org) 3.1.3 for Ed25519; nothing to install.
 - **Compatible with Arduino-ESP32 2.x and 3.x**.
 - **Secure by default:** the bundled ISRG Root X1 root CA is used automatically; no configuration needed for production.
 
@@ -242,7 +242,7 @@ Executes the offer stored by the most recent successful `check()`.
 
 ### `bool report(const char* event, const char* reason = nullptr)`
 
-Manually posts a single status event to `/api/v1/ota/status/`. Useful for custom lifecycle control flows. Returns `true` on HTTP 2xx with `"accepted": true`.
+Manually posts a single status event to `/api/v1/ota/status/`. Useful for custom lifecycle control flows. Returns `true` on HTTP 2xx.
 
 Requires a deployment context populated by a successful `check()`. The context is retained through `apply()` (so post-apply `report()` calls work) and is cleared on the next `check()` invocation. Outside that window, `report()` returns `false` without sending anything.
 
@@ -550,7 +550,7 @@ Do not upload the migration build itself as `signed`: devices explicitly reporti
 
 Verification runs inside the application, so the trust anchor is the firmware the device is already running. That protects the **OTA delivery path** (compromised account, leaked upload token, tampered storage, MITM); it does **not** protect the device itself. An attacker with physical access can still reflash arbitrary firmware over UART/USB via the ESP32's ROM download mode, and firmware that is already compromised will not verify itself. The hardware answer to those threats is [ESP32 Secure Boot](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/security/secure-boot-v2.html) (plus Flash Encryption), which is complementary: SimpleOTA signing protects the supply chain to the device, Secure Boot protects the device itself. Note that stock Arduino-ESP32 cores ship precompiled bootloaders built **without** Secure Boot, so enabling it requires building under ESP-IDF; on the Arduino path, OTA-level signing is the strongest firmware-integrity protection available.
 
-Ed25519 verification uses a vendored, unmodified copy of [Monocypher](https://monocypher.org) 3.1.3 (dual-licensed CC0-1.0 / BSD-2-Clause).
+Ed25519 verification uses a vendored, unmodified copy of [Monocypher](https://monocypher.org) 3.1.3 (dual-licensed CC0-1.0 / BSD-2-Clause; see `src/sota_core/LICENSE-vendor.md`).
 
 ---
 
@@ -560,9 +560,9 @@ The library supports a **library-managed trial install with timeout-based rollba
 
 The stock Arduino-ESP32 bootloader can switch back to the previous firmware by itself, but the core normally accepts every new image before `setup()` runs. The library tells the core to leave a SimpleOTA trial on probation (it defines `verifyRollbackLater()`), and only a SimpleOTA trial: an image written by ArduinoOTA or another updater is accepted as usual. So a crash or a reset at any point before `confirmRunning()`, including in a global constructor or early in `setup()`, makes the bootloader return to the previous firmware on the next boot. The `rolled_back` report then carries the reset that ended the trial: `panic`, `int_wdt`, `task_wdt`, `watchdog`, `brownout`, `power_on`, `deep_sleep` or `reset`. Deep sleep also ends a trial: an image that wakes from deep sleep before `confirmRunning()` goes back to the previous firmware, with the reason `deep_sleep`, so confirm before sleeping. `confirmRunning()` tells the bootloader the image is good first; if that fails, it returns `false` and the trial carries on.
 
-A sketch cannot define its own `verifyRollbackLater()` alongside the library. Build with `-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` to leave the core's behaviour alone; the confirm timer then remains the only rollback. See [Limitations](#limitations).
+A sketch cannot define its own `verifyRollbackLater()` alongside the library. Build with `-DSIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` to leave the core's behaviour alone. The library then rolls back itself: on the confirm timeout, and when a trial boots after a panic or watchdog reset or wakes from deep sleep. It misses a crash before its first call. See [Limitations](#limitations).
 
-A hang that also stops the FreeRTOS confirm timer is caught by the chip's own watchdog (the RTC or LP watchdog, which runs on the slow clock). It starts in `verifyRollbackLater()` before `setup()` for the compile-time `SIMPLEOTA_CONFIRM_TIMEOUT_S`, restarts with this instance's confirm time when the library first runs, and stops on `confirmRunning()`. It waits for the confirm time plus a margin, the larger of `SIMPLEOTA_TRIAL_WDT_MARGIN_S` (60 s) and 10 percent. When it fires, the chip resets, the bootloader returns to the previous firmware, and the report says `watchdog`. So call `confirmRunning()` within the confirm time, and if your bring-up before the first library call can take longer than the default, raise `SIMPLEOTA_CONFIRM_TIMEOUT_S` with a `-D` flag. At the usual internal slow clock the watchdog can wait at most about 8 hours (about 13 hours on the S2); a longer confirm time prints a warning and the watchdog fires at its limit. On core 3.x it stops before deep sleep, so the wake reports `deep_sleep`; on core 2.x a sleep longer than the rest of the confirm time ends in a watchdog reset instead. Either way the trial rolls back, so confirm before sleeping. Build with `-DSIMPLEOTA_DISABLE_TRIAL_WATCHDOG` to leave it out. Both opt-out flags must reach the C compiler too: put them in a `build_opt.h` next to the sketch, or set both `compiler.c.extra_flags` and `compiler.cpp.extra_flags`.
+A hang that also stops the FreeRTOS confirm timer is caught by the chip's own watchdog (the RTC or LP watchdog, which runs on the slow clock). It starts in `verifyRollbackLater()` before `setup()` for the compile-time `SIMPLEOTA_CONFIRM_TIMEOUT_S`, restarts with this instance's confirm time when the library first runs, and stops on `confirmRunning()`. It waits for the confirm time plus a margin: the larger of 10 percent and the time one request can take at `SIMPLEOTA_TIMEOUT_MS` (70 s at the default), and never less than 60 s. When it fires, the chip resets, the previous firmware comes back, and the report says `watchdog`. So call `confirmRunning()` within the confirm time, and if your bring-up before the first library call can take longer than the default, raise `SIMPLEOTA_CONFIRM_TIMEOUT_S` with a `-D` flag. At the usual internal slow clock the watchdog can wait at most about 8 hours (about 13 hours on the S2); a longer confirm time prints a warning and the watchdog fires at its limit. On core 3.x it stops before deep sleep, so the wake reports `deep_sleep`; on core 2.x a sleep longer than the rest of the confirm time ends in a watchdog reset instead. Either way the trial rolls back, so confirm before sleeping. Build with `-DSIMPLEOTA_DISABLE_TRIAL_WATCHDOG` to leave it out. That flag must reach the C compiler too: put it in a `build_opt.h` next to the sketch, or set both `compiler.c.extra_flags` and `compiler.cpp.extra_flags`.
 
 ### Polling mode
 
@@ -645,10 +645,8 @@ Override any of the following with a `-D` compiler flag or a `#define` placed **
 | `SIMPLEOTA_TIMEOUT_MS` | `15000` | Milliseconds before an HTTP request or a stalled download is abandoned. |
 | `SIMPLEOTA_CHECK_INTERVAL_S` | `3600` | Default check interval (in seconds) used by `begin()`. Also exposed as a constant for manual scheduling in polling mode. |
 | `SIMPLEOTA_CONFIRM_TIMEOUT_S` | `300` | Default trial-install confirm timeout (in seconds). See [Rollback](#rollback). Overridable per-instance via `setConfirmTimeout()`. |
-| `SIMPLEOTA_TRIAL_WDT_MARGIN_S` | `60` | Smallest margin, in seconds, the chip watchdog adds to the confirm time; 10 percent of the confirm time is used when larger. Set it with a `-D` flag that reaches both compilers. |
 | `SIMPLEOTA_DISABLE_TRIAL_WATCHDOG` | unset | `-D` flag: leave the chip watchdog out. Crashes and resets still roll back. |
-| `SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` | unset | `-D` flag: do not define `verifyRollbackLater()`; the confirm timer is the only rollback and the watchdog is left out. |
-| `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` | `10` | How often (in seconds) the managed task retries `/check/` while in a trial install. |
+| `SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` | unset | `-D` flag: do not define `verifyRollbackLater()`; the library rolls back by itself, which misses a crash before its first call. |
 | `SIMPLEOTA_DEBUG` | `0` | Compile-time default for verbose `[SimpleOTAClient]` logging on `Serial`. Prefer the runtime `SimpleOTAClient::setDebug(true)` toggle from your sketch; see [Logging](#logging). |
 
 **Retry policy:** `check()` and status posts retry once after a 2-second delay on transport failure (HTTP code ≤ 0). They never retry on any received HTTP response. The firmware download in `apply()` does not retry; a failure returns `OTA_FLASH_FAIL` and the next `check()` cycle can try again.
@@ -671,7 +669,7 @@ All messages are prefixed with `[SimpleOTAClient]` and written via `Serial.print
 
 The runtime toggle is the recommended path. A compile-time default also exists: build with `-DSIMPLEOTA_DEBUG=1` to make logging on by default. (A `#define SIMPLEOTA_DEBUG 1` placed in your sketch will **not** work, because the library's `.cpp` is compiled in a separate translation unit that doesn't see sketch-level defines. Use `setDebug(true)` or a real build flag.)
 
-The insecure-TLS warning is always emitted on `Serial`, regardless of this setting.
+Warnings, such as the insecure-TLS one or a rejected token, always print on `Serial`, regardless of this setting.
 
 ---
 

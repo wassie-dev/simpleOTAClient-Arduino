@@ -21,7 +21,6 @@ struct Download {
     SimpleOtaTLSClient tls;
     HTTPClient http;
     int64_t remaining;    ///< Body bytes still to come, or -1 when unknown.
-    uint32_t lastByteAt;  ///< millis() of the last progress.
 };
 
 }  // namespace
@@ -76,7 +75,6 @@ int sota_net_dl_open(void* user, const char* url, int64_t* len, char* location,
     }
     *len = d->http.getSize();
     d->remaining = *len > 0 ? *len : -1;
-    d->lastByteAt = millis();
     self->_download = d;
     return code;
 }
@@ -87,23 +85,16 @@ int sota_net_dl_read(void* user, uint8_t* buf, size_t cap) {
     Download* d = static_cast<Download*>(static_cast<SimpleOTAClient*>(user)->_download);
     // getStreamPtr() is WiFiClient* on 2.x and NetworkClient* on 3.x.
     auto* stream = d->http.getStreamPtr();
-    for (;;) {
-        if (d->remaining == 0) return 0;
-        const int avail = stream->available();
-        if (avail < 0) return SOTA_NET_ERROR;  // a socket error on Arduino-ESP32
-        if (avail > 0) {
-            size_t want = (size_t)avail < cap ? (size_t)avail : cap;
-            if (d->remaining > 0 && (int64_t)want > d->remaining) want = (size_t)d->remaining;
-            const int n = stream->readBytes(buf, want);
-            if (n <= 0) return 0;
-            if (d->remaining > 0) d->remaining -= n;
-            d->lastByteAt = millis();
-            return n;
-        }
-        if (!d->http.connected()) return 0;
-        if (millis() - d->lastByteAt > SIMPLEOTA_HTTP_TIMEOUT_MS) return SOTA_NET_STALLED;
-        delay(1);
-    }
+    if (d->remaining == 0) return 0;
+    const int avail = stream->available();
+    if (avail < 0) return SOTA_NET_ERROR;  // a socket error on Arduino-ESP32
+    if (avail == 0) return d->http.connected() ? SOTA_NET_AGAIN : 0;  // the core times a stall
+    size_t want = (size_t)avail < cap ? (size_t)avail : cap;
+    if (d->remaining > 0 && (int64_t)want > d->remaining) want = (size_t)d->remaining;
+    const int n = stream->readBytes(buf, want);
+    if (n <= 0) return 0;
+    if (d->remaining > 0) d->remaining -= n;
+    return n;
 }
 
 // The download's TLS session (about 45 KB of heap) is freed before the

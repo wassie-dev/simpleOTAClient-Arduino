@@ -257,12 +257,8 @@ void SimpleOTAClient::setManagedAutoConfirm(bool enabled) {
     if (_runner.task) _engine.cfg.auto_confirm = enabled;
 }
 
-// Below 10 s leaves no time to debug a trial on the serial console; above
-// 24 h is a bug, not a configuration.
 void SimpleOTAClient::setConfirmTimeout(uint32_t seconds) {
-    if (seconds < 10)    seconds = 10;
-    if (seconds > 86400) seconds = 86400;
-    _engine.cfg.confirm_timeout_s = seconds;
+    sota_engine_set_confirm_timeout(&_engine, seconds);
 }
 
 const char* SimpleOTAClient::lastOfferedVersion() const { return _engine.offer.version; }

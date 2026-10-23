@@ -11,7 +11,7 @@
 ### Changed
 
 - **Breaking:** anti-rollback. An offer whose build number is not above the running build is refused, `apply()` returns the new `OTA_DOWNGRADE`, and the server gets `failed` with `downgrade_refused`. An old image's signature still verifies, so this stops an old, vulnerable build being pushed. To go back, release the old code under a new, higher build number.
-- An image flashed some other way than SimpleOTA, such as over serial, reports build 0 instead of the build stored for the image before it, so a device reused for another project is not stuck refusing that project's builds. The running image's ELF SHA-256 is stored as `sota_image` to tell them apart.
+- An image flashed some other way than SimpleOTA, such as over serial, reports build 0 instead of the build stored for the image before it, so a device reused for another project is not stuck refusing that project's builds. The running image's ELF SHA-256 is stored as `sota_image` to tell them apart. Release firmware can declare its own build with `setImageBuild()`, so a USB-flashed release reports it and the server does not replace it.
 - **Breaking:** the API matches the ESP-IDF client's:
   - `begin(interval, isConnected, initialDelayMs)` takes no `onResult` callback; use `onEvent()`.
   - `report()` is gone: the library posts every status event itself, and a hand-made one could contradict the device's state.

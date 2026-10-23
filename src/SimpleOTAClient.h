@@ -349,6 +349,16 @@ public:
     void setVersionLabel(const char* label);
 
     /**
+     * @brief Declare this image's build number, for when it is flashed some
+     *        other way than SimpleOTA, such as over USB.
+     *
+     * Such an image reports this build instead of the one stored for the
+     * image before it. Without it (0, the default) it reports build 0, and
+     * the server offers it its current release. Call before check() or begin().
+     */
+    void setImageBuild(uint32_t build);
+
+    /**
      * @brief Set the release channel this device subscribes to.
      *
      * Only applied by the server on first registration or when the device has no

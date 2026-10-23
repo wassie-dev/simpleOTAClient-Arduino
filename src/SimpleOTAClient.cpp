@@ -245,6 +245,7 @@ bool SimpleOTAClient::addSigningPublicKey(const char* keyId, const char* pem) {
 }
 
 void SimpleOTAClient::setVersionLabel(const char* label)      { _engine.cfg.version_label = label; }
+void SimpleOTAClient::setImageBuild(uint32_t build)            { _engine.cfg.image_build = build; }
 void SimpleOTAClient::setChannel(const char* channel)         { _engine.cfg.device.channel = channel; }
 void SimpleOTAClient::setDebug(bool enabled)                  { _debugEnabled = enabled; }
 

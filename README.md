@@ -351,6 +351,12 @@ When `nullptr` (default), the library automatically reads the value persisted in
 
 ---
 
+### `void setImageBuild(uint32_t build)`
+
+Declares the build number of this image, for when it is flashed some other way than SimpleOTA, such as over USB. Such an image reports this build instead of the one stored for the image before it. Without it (`0`, the default) it reports build 0 and the server offers it its current release, which is what a device reused for another project needs. Set it in release firmware you may also flash over USB, so the server does not replace it with an older release. Call before `check()` or `begin()`.
+
+---
+
 ### `void setChannel(const char* channel)`
 
 Sets the release channel this device subscribes to (e.g. `"stable"`, `"beta"`). Only applied by the server on first registration or when the device has no channel yet. Pass `nullptr` (default) to omit the field.
@@ -495,7 +501,7 @@ To test against a local server, issue it a certificate from your own CA (for exa
 
 ### Other hardening built into the library
 
-- Anti-rollback: an offer whose build number is not above the running build is refused (`downgrade_refused`), because an old image's signature still verifies and old builds can carry fixed bugs. To go back, release the old code under a new, higher build number. The running build is the one stored with the image SimpleOTA installed; an image flashed some other way, such as over serial, reports build 0, so a device reused for another project takes that project's builds.
+- Anti-rollback: an offer whose build number is not above the running build is refused (`downgrade_refused`), because an old image's signature still verifies and old builds can carry fixed bugs. To go back, release the old code under a new, higher build number. The running build is the one stored with the image SimpleOTA installed; an image flashed some other way, such as over serial, reports the build given to `setImageBuild()`, or build 0, so a device reused for another project takes that project's builds.
 - Download URLs that don't begin with `https://` are rejected before any connection is made.
 - Project tokens containing CR/LF or control characters are rejected to prevent HTTP header injection.
 - The library never retries a received HTTP response; only transport-level failures trigger a retry. This prevents fleet-scale retry storms.
@@ -742,6 +748,7 @@ The [Arduino](https://github.com/xanderwasserman/SimpleOTAClient-Arduino) and [E
 | TLS trust | `setCACert(pem)` | `config.cert_pem` |
 | Signing keys | `setSigningPublicKey()`, `addSigningPublicKey()` | `config.signing_keys` |
 | Build and offer | `currentBuild()`, `lastOfferedVersion()` | `simpleota_current_build()`, `simpleota_last_offered_version()` |
+| Build of a USB-flashed image | `setImageBuild(build)` | `config.image_build` |
 | Logging | `setDebug(true)` | `esp_log_level_set("simpleota", ...)` |
 | HTTP timeout | `-DSIMPLEOTA_HTTP_TIMEOUT_MS` | `CONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS` |
 

@@ -12,7 +12,7 @@ The update logic is now [SimpleOTAClient-core](https://github.com/wassie-dev/sim
 - **`setRollbackEnabled()` is gone.** Every update runs as a trial and rolls back if it is not confirmed.
 - **TLS is always verified.** `setCACert(nullptr)` no longer turns verification off; it keeps the current CA and prints a warning. To test against a local server, give it a certificate from your own CA and pass that CA to `setCACert()`.
 - **Older builds are refused.** `apply()` returns the new `OTA_DOWNGRADE`, so a `switch` over `OTAResult` needs a case for it. To go back, release the old code under a new, higher build number.
-- **A sketch flashed over USB reports build 0**, so the server offers it its current release. Call `setImageBuild()` with the image's build to keep it. Before, it kept reporting the build SimpleOTA last installed.
+- **A sketch flashed over USB reports build 0**, so the server offers it its current release. Firmware that is flashed over USB as a release can declare its build with `setImageBuild()`; see the README for when to. Before, it kept reporting the build SimpleOTA last installed.
 - `check()` and `apply()` refuse to run while `begin()`'s task runs, and `setServerUrl()` refuses until `end()`. Use polling or managed mode, not both.
 - Renamed, with the old names still compiling with a deprecation warning: `confirmRunning()` is `confirm()`, `isTrialInstall()` is `isTrialBoot()`, and `SIMPLEOTA_TIMEOUT_MS` is `SIMPLEOTA_HTTP_TIMEOUT_MS`.
 - `SIMPLEOTA_TRIAL_WDT_MARGIN_S` is gone: the watchdog margin follows `SIMPLEOTA_HTTP_TIMEOUT_MS`.

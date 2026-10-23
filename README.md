@@ -168,7 +168,7 @@ Five runnable examples are bundled:
 | [`examples/ManagedOTA/ManagedOTA.ino`](examples/ManagedOTA/ManagedOTA.ino) | Hands-off managed mode using `begin()` with an `isConnected` probe and `onEvent()`. |
 | [`examples/RollbackOTA/RollbackOTA.ino`](examples/RollbackOTA/RollbackOTA.ino) | Managed mode that confirms a trial only after its own health check, with `setManagedAutoConfirm(false)` and `setConfirmTimeout()`. |
 | [`examples/SignedOTA/SignedOTA.ino`](examples/SignedOTA/SignedOTA.ino) | Signed firmware: `setSecurityMode(SECURITY_MODE_SIGNED)` and a pinned key. |
-| [`examples/AdvancedOTA/AdvancedOTA.ino`](examples/AdvancedOTA/AdvancedOTA.ino) | Custom `deviceId` / `boardId` / `hardwareRevision`, `setImageBuild()`, `setAutoReboot(false)` with `rebootForUpdate()` for the application-driven restart, every `OTAResult`, verbose logging. |
+| [`examples/AdvancedOTA/AdvancedOTA.ino`](examples/AdvancedOTA/AdvancedOTA.ino) | Custom `deviceId` / `boardId` / `hardwareRevision`, `setAutoReboot(false)` with `rebootForUpdate()` for the application-driven restart, every `OTAResult`, verbose logging. |
 
 ---
 
@@ -356,7 +356,18 @@ When `nullptr` (default), the library automatically reads the value persisted in
 
 ### `void setImageBuild(uint32_t build)`
 
-Declares the build number of this image, for when it is flashed some other way than SimpleOTA, such as over USB. Such an image reports this build instead of the one stored for the image before it. Without it (`0`, the default) it reports build 0 and the server offers it its current release, which is what a device reused for another project needs. Set it in release firmware you may also flash over USB, so the server does not replace it with an older release. The number must be the one SimpleOTA gives this image, so set it only when you know that number before you build. An image installed by SimpleOTA always reports the build it was installed as, whatever this says. Call it before the first `check()`, `apply()`, `confirm()`, `isTrialBoot()` or `begin()`, which work out what this boot is.
+Declares the build number of this image, for one situation: you flash a **release** image over USB, such as at the factory or when re-flashing a unit in the field, and the same file is also a SimpleOTA upload. Most sketches never need it: leave it at `0` (the default) while you develop and test, and whenever devices only get firmware from SimpleOTA.
+
+An image flashed over USB reports this build instead of the one stored for the image before it. Without it, it reports build 0, so on its first check-in the server sends it the current release again, or an older one if that is what its deployment targets.
+
+To use it:
+
+1. Look up the project's last build number on the dashboard, say 41. SimpleOTA numbers each upload one above the last, so the next upload will be 42.
+2. Call `setImageBuild(42)` and build.
+3. Upload that exact `.bin` to SimpleOTA, and check that it got build 42.
+4. Flash the same `.bin` over USB.
+
+If the number is wrong, the device reports a build it does not run. Set too high, it is not offered any build up to that number, so set it back to `0` in the next upload whenever you are not sure. An image installed by SimpleOTA always reports the build it was installed as, whatever this says. Call it before the first `check()`, `apply()`, `confirm()`, `isTrialBoot()` or `begin()`, which work out what this boot is.
 
 ---
 
@@ -726,7 +737,7 @@ The figures below come from building examples/SignedOTA with arduino-cli 1.5.1 a
 | `update_begin_failed` | Partition table has no second OTA slot, or the OTA slot is too small for the firmware being applied. |
 | `OTA_CHECKSUM_FAIL` | The firmware object was replaced or corrupted on the server between the `/check/` response and the download. |
 | Device is offered the same build repeatedly | The `simpleota`/`sota_build` NVS key was cleared or overwritten. See [Build numbers](#build-numbers). A `current_build_number` of `0` always matches a pending deployment, so a wiped NVS will keep re-offering the same build. |
-| A sketch flashed over USB is replaced by the server's release | The device reports build 0 for an image SimpleOTA did not install. Pass the image's build to [`setImageBuild()`](#void-setimagebuilduint32_t-build). |
+| A sketch flashed over USB is replaced by the server's release | Expected: the device reports build 0 for an image SimpleOTA did not install. Only if you flash release images over USB, see [`setImageBuild()`](#void-setimagebuilduint32_t-build). |
 | `apply()` returns `OTA_DOWNGRADE` | The server offered a build that is not above the one the device runs. To go back, upload the old code again as a new build. |
 | Download stalls or times out | Weak Wi-Fi signal, or `SIMPLEOTA_HTTP_TIMEOUT_MS` is too short for the link speed and firmware size. Increase the timeout or improve signal quality. |
 | `[SimpleOTAClient] WARNING: setCACert: TLS is always verified; keeping the current CA` | `setCACert(nullptr)` was called. Verification can't be turned off. See [Security](#security). |
@@ -768,7 +779,7 @@ Devices update from 0.6.0 and earlier over the air, also in the middle of a tria
 - `setCACert(nullptr)` no longer turns TLS verification off. For a local server, pass your own CA.
 - `apply()` can return `OTA_DOWNGRADE`; add it to any `switch` over `OTAResult`.
 - `check()` and `apply()` don't run while `begin()`'s task runs.
-- A sketch flashed over USB reports build 0 unless it calls [`setImageBuild()`](#void-setimagebuilduint32_t-build).
+- A sketch flashed over USB reports build 0, so the server offers it the current release. If you flash release images over USB, see [`setImageBuild()`](#void-setimagebuilduint32_t-build).
 - `confirmRunning()`, `isTrialInstall()` and `SIMPLEOTA_TIMEOUT_MS` still compile, with a deprecation warning: use `confirm()`, `isTrialBoot()` and `SIMPLEOTA_HTTP_TIMEOUT_MS`.
 
 The [CHANGELOG](CHANGELOG.md) lists every change.

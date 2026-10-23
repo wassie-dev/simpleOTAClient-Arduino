@@ -9,8 +9,6 @@
 //   - setNvsSchemaVersion(): incremented when your own NVS layout changes.
 //   - setLabels(): arbitrary key/value metadata for server-side targeting.
 //   - setSecurityMode(): the security mode the server matches builds on.
-//   - setImageBuild(): the build this image reports when it was flashed over
-//     USB instead of by SimpleOTA.
 //   - setAutoReboot(false): the application decides when to restart, and
 //     uses rebootForUpdate() to emit the "reboot" event before restarting.
 //   - lastOfferedVersion(): read the version label from the check() offer.
@@ -21,11 +19,6 @@
 #include <SimpleOTAClient.h>
 
 #define FIRMWARE_VERSION "1.0.0"
-
-// The build number SimpleOTA gives this image, when you know it before you
-// build. It is reported only when the image was flashed over USB, so the
-// server does not replace it with its current release. 0: unknown, report 0.
-#define FIRMWARE_BUILD 0
 
 static const char* WIFI_SSID = "your-ssid";
 static const char* WIFI_PASS = "your-password";
@@ -80,9 +73,6 @@ void setup() {
     delay(200);
     SimpleOTAClient::setDebug(true);   // verbose [SimpleOTAClient] logs on Serial
     ota.onEvent(onOtaEvent);
-    // Before the first call that works out what this boot is (confirm(),
-    // check(), apply(), isTrialBoot() or begin()).
-    ota.setImageBuild(FIRMWARE_BUILD);
     connectWiFi();
 
     // Confirm a prior trial install (no-op if not in trial). Call this as

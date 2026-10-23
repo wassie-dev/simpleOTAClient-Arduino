@@ -6,8 +6,7 @@
 // IMPORTANT: do NOT pass your own firmware version counter as the build
 // number. SimpleOTA assigns its own monotonic build number on upload, and the
 // library persists it to NVS for you. A sketch flashed over USB reports build
-// 0, so the server offers it its current release; AdvancedOTA shows
-// setImageBuild() for that case. See README.md for details.
+// 0, so the server offers it its current release. See README.md for details.
 
 #include <WiFi.h>
 #include <SimpleOTAClient.h>

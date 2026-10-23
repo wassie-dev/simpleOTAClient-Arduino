@@ -13,7 +13,7 @@
 - Server responses are read from their top-level fields only, and numbers too large for 32 bits are refused.
 - A trial that boots after a panic or watchdog reset is rolled back, also when the bootloader resumed it.
 - The watchdog margin grows with `SIMPLEOTA_TIMEOUT_MS`, so a trial can finish its current request and roll back first. `SIMPLEOTA_TRIAL_WDT_MARGIN_S` is gone, and `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` is fixed at 10 s.
-- Firmware downloads follow up to three redirects.
+- Firmware downloads follow up to three redirects, each only to another `https://` URL (`redirect_not_https` otherwise).
 - `report()` returns `true` on any HTTP 2xx, without reading `"accepted"`.
 - Warnings print on `Serial` without `setDebug(true)`.
 - `setRollbackEnabled(false)` also accepts an image that boots on trial from an earlier `apply()`.

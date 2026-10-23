@@ -551,7 +551,8 @@ private:
     friend void sota_app_wake(void* user);
     friend int  sota_net_post(void* user, const char* url, const char* token,
                               const char* body, char* resp, size_t cap);
-    friend int  sota_net_dl_open(void* user, const char* url, int64_t* len);
+    friend int  sota_net_dl_open(void* user, const char* url, int64_t* len, char* location,
+                                 size_t location_cap);
     friend int  sota_net_dl_read(void* user, uint8_t* buf, size_t cap);
     friend void sota_net_dl_close(void* user);
 };

@@ -58,21 +58,33 @@ int sota_net_post(void* user, const char* url, const char* token, const char* bo
 }
 
 // No Authorization header: the pre-signed URL carries its own credentials,
-// and the token must not reach the storage host.
-int sota_net_dl_open(void* user, const char* url, int64_t* len) {
+// and the token must not reach the storage host. A redirect is handed back
+// to the core, which checks where it leads.
+int sota_net_dl_open(void* user, const char* url, int64_t* len, char* location,
+                     size_t location_cap) {
     SimpleOTAClient* self = static_cast<SimpleOTAClient*>(user);
     Download* d = new (std::nothrow) Download();
     if (!d) return 0;
     useTrust(d->tls, self->_caCert, self->_insecureWarned);
     d->http.setTimeout(SIMPLEOTA_TIMEOUT_MS);
-    d->http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    d->http.setRedirectLimit(SOTA_NET_MAX_REDIRECTS);
+    d->http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+    static const char* kLocation[] = {"Location"};
+    d->http.collectHeaders(kLocation, 1);
     if (!d->http.begin(d->tls, url)) {
         delete d;
         return 0;
     }
     const int code = d->http.GET();
     if (code != HTTP_CODE_OK) {
+        if (sota_net_is_redirect(code) && location_cap) {
+            // A Location that does not fit is left empty, never cut short.
+            const String to = d->http.header("Location");
+            if (to.length() < location_cap) {
+                memcpy(location, to.c_str(), to.length() + 1);
+            } else {
+                location[0] = '\0';
+            }
+        }
         d->http.end();
         delete d;
         return code > 0 ? code : 0;

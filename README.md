@@ -449,7 +449,9 @@ On failure at any stage, a `failed` event is reported with a short reason token 
 | --- | --- |
 | `insecure_url` | URL did not begin with `https://` |
 | `https_begin_failed` | Could not open HTTPS connection to download URL |
-| `http_status_<N>` | Server returned non-200 for the firmware GET |
+| `http_status_<N>` | Server returned non-200 for the firmware GET, or a fourth redirect |
+| `redirect_not_https` | A download redirect led to a plain HTTP URL |
+| `redirect_malformed` | A download redirect had no usable `Location` |
 | `update_begin_failed` | `Update.begin()` failed, likely a partition issue |
 | `update_write_failed` | Flash write error during streaming |
 | `stream_error` | Socket error mid-download |

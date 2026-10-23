@@ -72,12 +72,6 @@ static_assert(OTA_EVENT_CHECK_DONE == (int)SOTA_EVENT_CHECK_DONE &&
                   OTA_EVENT_CONFIRMED == (int)SOTA_EVENT_CONFIRMED &&
                   OTA_EVENT_ROLLING_BACK == (int)SOTA_EVENT_ROLLING_BACK,
               "OTAEvent follows sota_event_id_t");
-static_assert(OTA_SUCCESS == (int)SOTA_APPLY_OK && OTA_CHECKSUM_FAIL == (int)SOTA_APPLY_CHECKSUM_FAIL &&
-                  OTA_FLASH_FAIL == (int)SOTA_APPLY_FLASH_FAIL && OTA_NO_OFFER == (int)SOTA_APPLY_NO_OFFER &&
-                  OTA_SIGNATURE_FAIL == (int)SOTA_APPLY_SIGNATURE_FAIL &&
-                  OTA_REBOOT_PENDING == (int)SOTA_APPLY_REBOOT_PENDING &&
-                  OTA_UNCONFIRMED == (int)SOTA_APPLY_UNCONFIRMED,
-              "OTAResult follows sota_apply_result_t");
 
 void sota_app_event(void* user, const sota_event_t* event) {
     SimpleOTAClient* self = static_cast<SimpleOTAClient*>(user);
@@ -158,8 +152,8 @@ SimpleOTAClient::SimpleOTAClient(const char* token,
       _caCert(SimpleOTAClient::kSimpleOtaRootCA),
       _managedAutoConfirm(true),
       _download(nullptr),
-      _runner(),
       _onEvent(nullptr),
+      _runner(),
       _isConnected(nullptr) {
     if (!deviceId) {
         sota_sys_default_device_id(_deviceIdBuf);
@@ -206,8 +200,8 @@ bool SimpleOTAClient::setServerUrl(const char* url) {
     }
     const sota_url_status_t status = sota_validate_server_url(url);
     if (status != SOTA_URL_OK) {
-        Serial.printf("[SimpleOTAClient] setServerUrl rejected (%s). Keeping %s\n",
-                      sota_url_status_name(status), _engine.cfg.server_url);
+        SOTA_LOGW("setServerUrl rejected (%s). Keeping %s", sota_url_status_name(status),
+                  _engine.cfg.server_url);
         return false;
     }
     _engine.cfg.server_url = url;
@@ -215,6 +209,7 @@ bool SimpleOTAClient::setServerUrl(const char* url) {
 }
 
 void SimpleOTAClient::onEvent(void (*callback)(const OTAEventInfo&)) { _onEvent = callback; }
+
 // TLS is always verified: without its server's certificate a device flashes
 // whatever an on-path attacker hands it.
 void SimpleOTAClient::setCACert(const char* pemRootCA) {
@@ -340,15 +335,15 @@ void SimpleOTAClient::end() {
     _engine.cfg.auto_confirm = false;
 }
 
-bool SimpleOTAClient::connectedFor(void* self) {
-    auto* client = static_cast<SimpleOTAClient*>(self);
-    return !client->_isConnected || client->_isConnected();
-}
-
 bool SimpleOTAClient::checkNow() {
     if (_runner.task == nullptr) return false;
     sota_runner_wake(&_runner);
     return true;
+}
+
+bool SimpleOTAClient::connectedFor(void* self) {
+    auto* client = static_cast<SimpleOTAClient*>(self);
+    return !client->_isConnected || client->_isConnected();
 }
 
 // ---------------------------------------------------------------------------

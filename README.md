@@ -410,7 +410,7 @@ Starts a FreeRTOS background task (stack: 8 KB, priority: 1) that runs the follo
 
 1. **If `initialDelayMs` > 0**, sleep for that many milliseconds (one-shot, at task start only). Use this to stagger the first HTTPS request relative to other TLS sessions starting concurrently at boot (e.g. MQTT). Default: `0`.
 2. If `isConnected` was supplied, wait until it returns `true` (polled every second). Otherwise skip this step.
-3. **If a trial install is in progress**, run a short-retry inner loop: retry `/check/` every `SIMPLEOTA_TRIAL_RETRY_INTERVAL_S` seconds (default 10 s) until the server responds with HTTP 200 or the confirm timeout expires. With `setManagedAutoConfirm(true)` (default), call `confirm()` on the first such response, send the `confirmed` event straight away, and `apply()` an update that check offered; that check counts as this cycle's, so the loop goes on to step 6. Skip this step on a normal (non-trial) boot.
+3. **If a trial install is in progress**, run a short-retry inner loop: retry `/check/` every 10 s until the server responds with HTTP 200 or the confirm timeout expires. With `setManagedAutoConfirm(true)` (default), call `confirm()` on the first such response, send the `confirmed` event straight away, and `apply()` an update that check offered; that check counts as this cycle's, so the loop goes on to step 5. Skip this step on a normal (non-trial) boot.
 4. Check in. If an update is available, apply it.
 5. Sleep for `checkIntervalSec` seconds, or until `checkNow()`, then repeat.
 

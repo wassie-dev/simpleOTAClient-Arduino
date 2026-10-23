@@ -570,14 +570,15 @@ private:
     const char*   _caCert;         ///< Never nullptr: TLS is always verified.
     bool          _managedAutoConfirm;
     void*         _download;       ///< The open firmware download (SimpleOTANet.cpp).
+    void        (*_onEvent)(const OTAEventInfo&);
 
     // Managed mode: the core's task.
     sota_runner_t _runner;
-    void        (*_onEvent)(const OTAEventInfo&);
     bool        (*_isConnected)();
     static bool  connectedFor(void* self);
+
+    bool         setUp(const char* caller);    ///< _engineOk, with a warning when false.
     bool         polling(const char* caller);  ///< setUp(), and no managed task.
-    bool         setUp(const char* caller);  ///< _engineOk, with a warning when false.
 
     friend void sota_app_event(void* user, const sota_event_t* event);
     friend void sota_app_wake(void* user);

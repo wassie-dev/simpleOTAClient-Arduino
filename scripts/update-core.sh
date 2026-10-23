@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Copy the shared core into src/sota_core at a given ref of the core repo.
+# Copy the shared core into src/sota_core, and its public header into
+# src, at a given ref of the core repo.
 #
 #   scripts/update-core.sh [ref]    ref: a tag, branch or commit (default: main)
 #
@@ -16,4 +17,4 @@ trap 'rm -rf "$tmp"' EXIT
 
 git clone -q "$repo" "$tmp/core"
 git -C "$tmp/core" checkout -q --detach "$ref"
-"$tmp/core/scripts/sync-core.sh" "$root/src/sota_core"
+"$tmp/core/scripts/sync-core.sh" "$root/src/sota_core" "$root/src"

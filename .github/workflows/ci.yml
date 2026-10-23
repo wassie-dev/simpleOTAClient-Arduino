@@ -40,7 +40,7 @@ jobs:
           path: core
 
       - name: Compare
-        run: core/scripts/sync-core.sh --check src/sota_core
+        run: core/scripts/sync-core.sh --check src/sota_core src
 
   compile:
     name: Compile examples (ESP32)
@@ -96,7 +96,7 @@ jobs:
             --build-property "compiler.c.extra_flags=${{ matrix.flags }}" \
             examples/BasicOTA
           nm_bin=$(find "$HOME/.arduino15/packages/esp32/tools" -name 'xtensa-esp*-elf-nm' | head -1)
-          hook=$("$nm_bin" build/libraries/*/SimpleOTAClient.cpp.o | grep -c ' T verifyRollbackLater$' || true)
+          hook=$("$nm_bin" build/libraries/*/sota_core/sota_framework.c.o | grep -c ' T verifyRollbackLater$' || true)
           wdt=$("$nm_bin" build/libraries/*/sota_core/sota_wdt_esp32.c.o | grep -cE ' U wdt_hal_init$' || true)
           case "${{ matrix.flags }}" in
             "")                                    want_hook=1; want_wdt=1 ;;

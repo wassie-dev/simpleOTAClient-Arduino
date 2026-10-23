@@ -1,0 +1,255 @@
+/**
+ * simpleota.h - the SimpleOTA client for ESP32, the same API in the ESP-IDF
+ * component and the Arduino library.
+ *
+ * Thin client for the SimpleOTA firmware update platform
+ * (https://simpleota.com). Polls the check endpoint, streams and flashes
+ * offered firmware with on-the-fly SHA-256 and Ed25519 signature
+ * verification, reports lifecycle events, and runs every new image as a
+ * trial that rolls back unless it is confirmed.
+ *
+ * The application owns network bring-up (Wi-Fi/Ethernet) and decides when
+ * the client may talk to the network via the optional is_connected
+ * callback; the client does the rest from its own background task
+ * (managed mode). In polling mode the application calls simpleota_check()
+ * and simpleota_apply() from its own task instead, and confirms a trial with
+ * simpleota_confirm().
+ *
+ * Quick start:
+ *
+ *     simpleota_config_t cfg = {0};      // {} in an Arduino sketch
+ *     cfg.token = "sota_pk_...";        // project (or device) token
+ *     cfg.is_connected = wifi_up;       // or start after the IP arrives
+ *     ESP_ERROR_CHECK(simpleota_init(&cfg));
+ *     ESP_ERROR_CHECK(simpleota_start());
+ *
+ * The device needs a partition table with two OTA app slots, which
+ * Arduino-ESP32's default has. On ESP-IDF, rollback by the bootloader needs
+ * CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y, which Arduino-ESP32 sets. Both
+ * ship with the first serial flash and cannot change over OTA. Without
+ * bootloader rollback the client rolls a failed trial back itself
+ * (CONFIG_SIMPLEOTA_SOFTWARE_ROLLBACK): on the confirm timeout, or on any
+ * reset before the confirm, as the bootloader would. It cannot catch an
+ * image that crashes before simpleota_init() on every boot.
+ *
+ * The client is a process-wide singleton (one instance per device);
+ * a second simpleota_init() returns ESP_ERR_INVALID_STATE.
+ *
+ * Thread-safety: configure and init from one task. After init the public
+ * functions are safe to call from any task, except that polling mode and
+ * simpleota_set_server_url() belong to one task of the application's.
+ *
+ * Logs use the tag "simpleota". Warnings and errors show by default;
+ * esp_log_level_set("simpleota", ESP_LOG_DEBUG) after simpleota_init()
+ * shows every step.
+ */
+
+#ifndef SIMPLEOTA_H
+#define SIMPLEOTA_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "esp_err.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** Security modes, as understood by the SimpleOTA platform. */
+#define SIMPLEOTA_SECURITY_BASIC "basic"
+#define SIMPLEOTA_SECURITY_TOKEN "token"
+#define SIMPLEOTA_SECURITY_SIGNED "signed"
+
+/** What simpleota_apply() did; the same values as Arduino's OTAResult. */
+typedef enum {
+    SIMPLEOTA_OK = 0,             /**< Flashed and verified; the reboot is next. */
+    SIMPLEOTA_CHECKSUM_FAIL = 1,  /**< The download did not match its SHA-256. */
+    SIMPLEOTA_FLASH_FAIL = 2,     /**< Network, URL, flash or state write failure. */
+    SIMPLEOTA_NO_OFFER = 3,       /**< No offer from a successful simpleota_check(). */
+    SIMPLEOTA_SIGNATURE_FAIL = 4, /**< Required signature missing or wrong. */
+    SIMPLEOTA_REBOOT_PENDING = 5, /**< A flashed update waits for
+                                       simpleota_reboot_for_update(). */
+    SIMPLEOTA_UNCONFIRMED = 6,    /**< The running image is on trial: confirm it,
+                                       then apply again. The offer is kept. */
+    SIMPLEOTA_DOWNGRADE = 7,      /**< The offered build is not above the running
+                                       one; refused (anti-rollback). */
+} simpleota_result_t;
+
+/** Events delivered to the config's event_cb. */
+typedef enum {
+    SIMPLEOTA_EVENT_CHECK_DONE,        /**< A check completed; no update offered.
+                                            reason: the server's status. */
+    SIMPLEOTA_EVENT_UPDATE_AVAILABLE,  /**< An update was offered. The managed task
+                                            downloads it next, unless a trial runs. */
+    SIMPLEOTA_EVENT_DOWNLOAD_PROGRESS, /**< bytes_done / bytes_total advanced. */
+    SIMPLEOTA_EVENT_UPDATE_FAILED,     /**< Update aborted; reason carries the token. */
+    SIMPLEOTA_EVENT_BEFORE_REBOOT,     /**< Flashed + verified. Restart is imminent,
+                                            or deferred until
+                                            simpleota_reboot_for_update() when
+                                            disable_auto_reboot is set. */
+    SIMPLEOTA_EVENT_TRIAL_BOOT,        /**< Running an unconfirmed (trial) image. */
+    SIMPLEOTA_EVENT_CONFIRMED,         /**< The trial image's confirmed report
+                                            was delivered. */
+    SIMPLEOTA_EVENT_ROLLING_BACK,      /**< The trial failed; the previous image
+                                            starts next. reason says why. */
+} simpleota_event_id_t;
+
+typedef struct {
+    simpleota_event_id_t id;
+    const char *reason;   /**< A reason token (e.g. "checksum_mismatch"), the
+                               server's status for CHECK_DONE, or NULL. */
+    uint32_t build_number;/**< Build number the event refers to (0 if n/a). */
+    size_t bytes_done;    /**< DOWNLOAD_PROGRESS only. */
+    size_t bytes_total;   /**< DOWNLOAD_PROGRESS, and UPDATE_AVAILABLE (the
+                               offer's size); 0 when unknown. */
+} simpleota_event_t;
+
+/** A pinned Ed25519 public key for signed-firmware verification. */
+typedef struct {
+    const char *key_id; /**< The SimpleOTA key id (e.g. "prod-2026"), or NULL. */
+    const char *pem;    /**< PEM "BEGIN PUBLIC KEY" text from the dashboard. */
+} simpleota_signing_key_t;
+
+/**
+ * Configuration. Zero-initialize, then set at least .token. All strings are
+ * copied at init; the struct and its strings need not outlive the call.
+ */
+typedef struct {
+    const char *token;             /**< REQUIRED. Project token or per-device token. */
+    const char *base_url;          /**< Default "https://simpleota.com". Must be https://
+                                        with a host; anything else fails init. */
+    const char *device_id;         /**< Default: Wi-Fi STA MAC "aa:bb:cc:dd:ee:ff". */
+    const char *chip_family;       /**< Default: CONFIG_IDF_TARGET ("esp32", "esp32s3", ...). */
+    const char *board_id;          /**< NULL = omitted from check-ins. */
+    const char *hardware_revision; /**< NULL = omitted. */
+    const char *partition_profile; /**< NULL = omitted. */
+    const char *channel;           /**< Release channel; NULL = omitted. */
+    const char *labels_json;       /**< Reserved: pre-formed JSON object sent verbatim on
+                                        check-ins, but not yet consumed by the platform. */
+    const char *security_mode;     /**< SIMPLEOTA_SECURITY_* or NULL. */
+    const char *version_label;     /**< NULL = last persisted value from NVS. */
+    uint32_t image_build;          /**< This image's build number, reported when
+                                        SimpleOTA did not install it (a USB flash).
+                                        0 = unknown: such an image reports 0.
+                                        Set it only in the exact image you upload,
+                                        to the build SimpleOTA gives it. */
+    uint8_t nvs_schema_version;    /**< 0 => 1. */
+    uint32_t check_interval_s;     /**< 0 => 3600. */
+    uint32_t initial_delay_ms;     /**< Delay before the first check after start().
+                                        Not a wait for the IP; see is_connected. */
+    uint32_t confirm_timeout_s;    /**< 0 => 300. Clamped to [10, 86400]. */
+    bool manual_confirm;           /**< Managed mode: true = the app calls
+                                        simpleota_confirm(); false = the first
+                                        successful check-in confirms. Polling mode always
+                                        needs simpleota_confirm(). */
+    bool disable_auto_reboot;      /**< true: app calls simpleota_reboot_for_update(). */
+
+    /** Pinned public keys for signed firmware (0..2; parsed at init,
+     *  init fails on an unparseable PEM rather than continuing unpinned). */
+    const simpleota_signing_key_t *signing_keys;
+    uint8_t num_signing_keys;
+
+    /** Return false while the link is down (e.g. no IP yet). It is polled
+     *  every second, and the check runs as soon as it returns true.
+     *  NULL = always try: start() must then come after the IP arrives, or
+     *  the first check fails and the next is check_interval_s later. */
+    bool (*is_connected)(void *user_ctx);
+    /** Lifecycle events, called on the task that runs the update: the
+     *  managed task, or the app's task in polling mode. Keep it quick. */
+    void (*event_cb)(const simpleota_event_t *event, void *user_ctx);
+    void *user_ctx;
+
+    /** TLS trust, always verified. Default: the ESP-IDF certificate bundle,
+     *  or on Arduino, which does not ship it, the ISRG Root X1 and X2
+     *  certificates that SimpleOTA's hosts chain to. Set cert_pem to pin a
+     *  specific CA, or several concatenated, instead (then the bundle is not
+     *  used). */
+    const char *cert_pem;
+    esp_err_t (*crt_bundle_attach)(void *conf); /**< Override bundle fn; NULL = default. */
+} simpleota_config_t;
+
+/**
+ * Initialize the client: copy config, apply defaults, parse and pin
+ * signing keys, load persisted state, and run boot-time trial validation
+ * (detects rollbacks, arms the confirm timeout for trial boots).
+ *
+ * Call AFTER nvs_flash_init(); Arduino-ESP32 has already called it.
+ * Returns ESP_ERR_INVALID_ARG for a missing token, an unparseable signing
+ * key, a token containing control characters, or a base_url that is not
+ * https://; ESP_ERR_INVALID_STATE when already initialized or when neither
+ * the certificate bundle nor a cert_pem is available.
+ */
+esp_err_t simpleota_init(const simpleota_config_t *config);
+
+/** Start the managed background task (check on interval, apply, report).
+ *  On a trial boot the confirm timeout rolls back also without it, but
+ *  only the task's check-in confirms the trial (unless manual_confirm). */
+esp_err_t simpleota_start(void);
+
+/** Stop the managed task. Waits for its current step, up to 60 s, so a
+ *  download or flash write is never cut short. ESP_ERR_TIMEOUT when it
+ *  is still running then. */
+esp_err_t simpleota_stop(void);
+
+/** Wake the managed task to check immediately. */
+esp_err_t simpleota_check_now(void);
+
+/** Polling mode: check in, and keep any offer for simpleota_apply().
+ *  True when an update is offered. Sends queued reports first, except
+ *  during a trial. False, with a warning, while the managed task runs. */
+bool simpleota_check(void);
+
+/** Polling mode: download, verify and flash the offer from the last
+ *  simpleota_check(), then reboot unless disable_auto_reboot is set.
+ *  SIMPLEOTA_NO_OFFER, with a warning, while the managed task runs. */
+simpleota_result_t simpleota_apply(void);
+
+/** Point check-ins and status posts at another SimpleOTA server. Same rules
+ *  as base_url: https:// with a host. Firmware downloads still use the
+ *  offer's pre-signed URL. ESP_ERR_INVALID_ARG keeps the previous URL;
+ *  ESP_ERR_INVALID_STATE before init or while the managed task runs.
+ *  Not while simpleota_check() or simpleota_apply() runs on another task. */
+esp_err_t simpleota_set_server_url(const char *url);
+
+/** The version label of the last offer, or "" when there is none. Valid
+ *  until the next check. */
+const char *simpleota_last_offered_version(void);
+
+/**
+ * Confirm the currently running trial image (manual_confirm mode, called
+ * after the app's own health checks pass). Marks the image valid in the
+ * bootloader, cancels the confirm timer, and queues the "confirmed" report.
+ * Returns ESP_OK, also when there is no trial. Returns ESP_FAIL when the
+ * bootloader cannot record the image as good; the trial then keeps
+ * running, so call again.
+ */
+esp_err_t simpleota_confirm(void);
+
+/** Reboot into a downloaded update when disable_auto_reboot was set.
+ *  Until then the client does not download another update, because the
+ *  next update slot holds the one waiting for this reboot.
+ *
+ *  Stops the background task, posts the "reboot" status from a short-lived
+ *  task with CONFIG_SIMPLEOTA_TASK_STACK_SIZE (so any caller's stack is
+ *  enough), and restarts. Does not return unless no update is waiting
+ *  (ESP_ERR_INVALID_STATE). */
+esp_err_t simpleota_reboot_for_update(void);
+
+/** True while running an unconfirmed trial image. */
+bool simpleota_is_trial_boot(void);
+
+/** The build number this device currently reports (0 = none yet). */
+uint32_t simpleota_current_build(void);
+
+/** Stop (if needed) and release all resources. Mainly for tests.
+ *  ESP_ERR_TIMEOUT when the task did not stop; nothing is released then.
+ *  ESP_ERR_INVALID_STATE from event_cb on the managed task. */
+esp_err_t simpleota_deinit(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* SIMPLEOTA_H */

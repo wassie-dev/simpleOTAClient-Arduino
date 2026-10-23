@@ -4,7 +4,7 @@
 
 ![Platform: ESP32](https://img.shields.io/badge/platform-ESP32-blue)
 ![Framework: Arduino](https://img.shields.io/badge/framework-Arduino-teal)
-![Version: 0.6.0](https://img.shields.io/badge/version-0.6.0-green)
+![Version: 1.0.0](https://img.shields.io/badge/version-1.0.0-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 Integrates your ESP32 project with SimpleOTA in a few lines: check for an update, stream and flash it with on-the-fly SHA-256 verification, and let the library handle all the protocol bookkeeping. The application owns Wi-Fi and decides when to check; this library does the rest.

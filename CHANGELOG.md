@@ -33,6 +33,7 @@ The `SimpleOTAClient` class is replaced by the C API of the ESP-IDF component, `
 
 ### Changed
 
+- `simpleota_check()` and `simpleota_apply()` run on a short-lived task with `CONFIG_SIMPLEOTA_TASK_STACK_SIZE` while the caller waits, so TLS and signature checks never depend on the caller's stack.
 - HTTP goes through `esp_http_client` from the ESP-IDF inside Arduino-ESP32, the same transport as the ESP-IDF component, instead of `HTTPClient` and `WiFiClientSecure`.
 - `chip_family` is optional and defaults to the chip the sketch is built for.
 - `simpleota_current_build()` is right from `simpleota_init()` on; 0.x's `currentBuild()` returned 0 until the first check or confirm.

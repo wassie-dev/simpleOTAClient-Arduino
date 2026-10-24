@@ -17,9 +17,9 @@
 //      -in firmware.bin | base64).
 //
 // Migrating an existing basic-mode fleet? Ship THIS firmware as one last
-// "basic" upload first. Devices without a pinned key apply signed offers
-// checksum-only (with a logged warning), so the migration update always
-// flows; every update after it is fully verified.
+// "basic" upload first: a basic upload reaches devices that report basic
+// and devices that report no mode. Every update after it is signed and
+// verified on the device.
 
 #include <WiFi.h>
 #include <simpleota.h>

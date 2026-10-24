@@ -207,7 +207,7 @@ Build-time knobs, as `-D` flags (PlatformIO `build_flags`; in the Arduino IDE a 
 
 The library's sources are C, so a flag must reach the C compiler: `build_flags` and `build_opt.h` both do.
 
-**Retry policy:** check-ins and status posts retry once after a 2-second delay when no response arrives (once only during a trial). They never retry a received HTTP response. The firmware download does not retry; a failure is reported and the next check can try again.
+**Retry policy:** check-ins and status posts retry once after a 2-second delay when no response arrives (not during a trial, which sends each once). They never retry a received HTTP response. The firmware download does not retry; a failure is reported and the next check can try again.
 
 ---
 
@@ -470,7 +470,7 @@ Built with Arduino-ESP32 2.0.17 for the ESP32, the examples take about 17 KB les
 | Hangs before `verifyRollbackLater()` | A hang in a global constructor happens before the chip watchdog starts, so nothing resets it. A crash there still rolls back. |
 | One client per device | The trial record and the boot slot belong to the device. A second `simpleota_init()` returns `ESP_ERR_INVALID_STATE`. |
 | No automatic `reboot` event with `disable_auto_reboot` | The library only reports `reboot` on the reboot it controls. Call `simpleota_reboot_for_update()`, which reports it and then restarts, instead of `ESP.restart()`; see AdvancedOTA. |
-| The sketch owns connectivity | The library is transport-agnostic and does not manage Wi-Fi, Ethernet, PPP, or reconnects. Give it `is_connected`, or check only once there is an IP. |
+| The sketch owns connectivity | The library works over any network interface and does not manage Wi-Fi, Ethernet, PPP, or reconnects. Give it `is_connected`, or check only once there is an IP. |
 | Default CA | The ISRG Root X1 and X2 certificates cover current SimpleOTA infrastructure. If the platform moves to a host under another root, set `cert_pem`, or update the library. |
 
 ---
@@ -487,7 +487,7 @@ Built with Arduino-ESP32 2.0.17 for the ESP32, the examples take about 17 KB les
 | A sketch flashed over USB is replaced by the server's release | Expected: the device reports build 0 for an image SimpleOTA did not install. Only if you flash release images over USB, see [When to set `image_build`](#when-to-set-image_build). |
 | `simpleota_apply()` returns `SIMPLEOTA_DOWNGRADE` | The server offered a build that is not above the one the device runs. To go back, upload the old code again as a new build. |
 | Download stalls or times out | Weak Wi-Fi signal, or `CONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS` is too short for the link. Increase the timeout or improve signal quality. |
-| `simpleota_init()` returns `ESP_ERR_INVALID_ARG` | A missing token or one with control characters, a `base_url` that is not `https://`, or a signing key that does not parse. The log says which. |
+| `simpleota_init()` returns `ESP_ERR_INVALID_ARG` | A missing token or one with control characters, a `base_url` that is not `https://`, a signing key that does not parse, or `SIMPLEOTA_SECURITY_SIGNED` without a signing key. The log says which. |
 
 ---
 
@@ -530,6 +530,7 @@ The sketch changes: 1.0.0 replaces the `SimpleOTAClient` class with the C API th
 What behaves differently:
 
 - TLS is always verified. For a local server, set `cfg.cert_pem` to your own CA.
+- `SIMPLEOTA_SECURITY_SIGNED` needs a signing key: without one, `simpleota_init()` fails, because the device would be offered signed builds it cannot verify.
 - An offer whose build is not above the running one is refused (`SIMPLEOTA_DOWNGRADE`). See [Anti-rollback](#anti-rollback).
 - A sketch flashed over USB reports build 0, so the server offers it the current release. If you flash release images over USB, see [When to set `image_build`](#when-to-set-image_build).
 - `simpleota_check()` and `simpleota_apply()` don't run while the managed task runs.

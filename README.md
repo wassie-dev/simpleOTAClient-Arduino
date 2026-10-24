@@ -199,6 +199,7 @@ Build-time knobs, as `-D` flags (PlatformIO `build_flags`; in the Arduino IDE a 
 | --- | --- | --- |
 | `CONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS` | `15000` | Milliseconds before a request, or a download that receives nothing, is abandoned |
 | `CONFIG_SIMPLEOTA_HTTP_TX_BUFFER` | `2048` | Must fit the request line of the long pre-signed download URLs |
+| `CONFIG_SIMPLEOTA_DOWNLOAD_CHUNK` | `4096` | The download buffer in bytes, on the heap during an update |
 | `CONFIG_SIMPLEOTA_TASK_STACK_SIZE` | `12288` | The managed task's stack, also used by the short-lived rollback and reboot tasks |
 | `CONFIG_SIMPLEOTA_TASK_PRIORITY` | `5` | The managed task's priority |
 | `SIMPLEOTA_DISABLE_TRIAL_WATCHDOG` | unset | Leave the chip watchdog out. Crashes and resets still roll back |

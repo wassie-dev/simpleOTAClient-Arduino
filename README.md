@@ -99,7 +99,7 @@ Add to `platformio.ini`:
 
 ```ini
 lib_deps =
-    https://github.com/xanderwasserman/SimpleOTAClient-Arduino.git
+    https://github.com/wassie-dev/SimpleOTAClient-Arduino.git
 ```
 
 ---
@@ -493,7 +493,7 @@ Built with Arduino-ESP32 2.0.17 for the ESP32, the examples take about 17 KB les
 
 ## Arduino and ESP-IDF
 
-The [ESP-IDF component](https://github.com/xanderwasserman/SimpleOTAClient-ESP-IDF) is this same client: the same `simpleota.h`, built from the same sources, so code that uses SimpleOTA works unchanged in an ESP-IDF app. Two things differ, because Arduino-ESP32 has no Kconfig and no certificate bundle: the build-time knobs are `-D` flags here and menuconfig options there, with the same names and defaults; and without `cert_pem`, this library verifies TLS against the ISRG roots while the component uses ESP-IDF's certificate bundle.
+The [ESP-IDF component](https://github.com/wassie-dev/SimpleOTAClient-ESP-IDF) is this same client: the same `simpleota.h`, built from the same sources, so code that uses SimpleOTA works unchanged in an ESP-IDF app. Two things differ, because Arduino-ESP32 has no Kconfig and no certificate bundle: the build-time knobs are `-D` flags here and menuconfig options there, with the same names and defaults; and without `cert_pem`, this library verifies TLS against the ISRG roots while the component uses ESP-IDF's certificate bundle.
 
 ---
 

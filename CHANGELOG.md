@@ -6,6 +6,7 @@ The `SimpleOTAClient` class is replaced by the C API of the ESP-IDF component, `
 
 ### Upgrading
 
+- **The repository moved to [wassie-dev/SimpleOTAClient-Arduino](https://github.com/wassie-dev/SimpleOTAClient-Arduino).** GitHub redirects the old URL, but update `lib_deps` entries that name it.
 - **Devices update from 0.6.0 and earlier over the air**, mid-trial too. The NVS keys and their meanings are unchanged, and a trial that fails returns to the old release, which reads the rollback as it always has. 1.0.0 adds one key, `sota_image`, which older releases ignore.
 - **Sketches move to the C API.** `#include <simpleota.h>`, fill a `simpleota_config_t` and call `simpleota_init()` early in `setup()`, then `simpleota_start()` for managed mode, or `simpleota_check()` and `simpleota_apply()` for polling. The README's *Upgrading from 0.x* section maps every 0.x call, and all five examples are rewritten.
 - **`SECURITY_MODE_TOKEN` is gone.** `cfg.security_mode` is an enum, `simpleota_security_t`: `SIMPLEOTA_SECURITY_BASIC`, `SIMPLEOTA_SECURITY_SIGNED`, or left at zero to report none. The platform never used a reported "token", and it kept such a device from matching basic and signed builds. The platform no longer stores a reported "token" and has cleared the values it kept, so devices that reported it match basic builds again.

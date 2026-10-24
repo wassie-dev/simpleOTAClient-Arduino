@@ -519,7 +519,8 @@ The sketch changes: 1.0.0 replaces the `SimpleOTAClient` class with the C API th
 | `ota.setCACert(pem)` | `cfg.cert_pem` |
 | `ota.setSigningPublicKey(pem)`, `addSigningPublicKey(id, pem)` | `cfg.signing_keys`, `cfg.num_signing_keys` |
 | `setPartitionProfile`, `setNvsSchemaVersion`, `setLabels`, `setSecurityMode`, `setChannel`, `setVersionLabel`, `setImageBuild` | `cfg.partition_profile`, `cfg.nvs_schema_version`, `cfg.labels_json`, `cfg.security_mode`, `cfg.channel`, `cfg.version_label`, `cfg.image_build` |
-| `SECURITY_MODE_*`, `CHIP_*` constants | `SIMPLEOTA_SECURITY_*`; `chip_family` defaults to the chip the sketch is built for |
+| `SECURITY_MODE_BASIC`, `SECURITY_MODE_SIGNED`, `CHIP_*` constants | `SIMPLEOTA_SECURITY_BASIC`, `SIMPLEOTA_SECURITY_SIGNED`; `chip_family` defaults to the chip the sketch is built for |
+| `SECURITY_MODE_TOKEN` | Gone: the platform never used it, and a device reporting it matched neither basic nor signed builds |
 | `currentBuild()`, `lastOfferedVersion()` | `simpleota_current_build()`, `simpleota_last_offered_version()` |
 | `SimpleOTAClient::setDebug(true)`, `SIMPLEOTA_DEBUG` | `esp_log_level_set("simpleota", ESP_LOG_DEBUG)` |
 | `SIMPLEOTA_HTTP_TIMEOUT_MS` / `SIMPLEOTA_TIMEOUT_MS` | `-DCONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS` |

@@ -98,7 +98,14 @@ void setup() {
     // trip.
     simpleota_confirm();
 
-    if (!simpleota_check()) {
+    bool update = false;
+    esp_err_t err = simpleota_check(&update);
+    if (err != ESP_OK) {
+        // No response or an error status: back off, the server may be down.
+        Serial.printf("[app] check failed: %s\n", esp_err_to_name(err));
+        return;
+    }
+    if (!update) {
         Serial.println("[app] no update offered");
         return;
     }

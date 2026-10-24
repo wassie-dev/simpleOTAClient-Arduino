@@ -144,7 +144,8 @@ The sketch runs the checks from its own loop, and confirms a new image itself on
 void loop() {
     if (WiFi.status() != WL_CONNECTED) connectWiFi();
     simpleota_confirm();                 // does nothing without a trial
-    if (simpleota_check()) {
+    bool update = false;
+    if (simpleota_check(&update) == ESP_OK && update) {
         simpleota_apply();               // restarts on success
     }
     delay(3600UL * 1000UL);
@@ -357,7 +358,8 @@ void loop() {
     if (WiFi.status() != WL_CONNECTED) connectWiFi();
     simpleota_confirm();   // nothing happens without a trial
     // ... your app code ...
-    if (simpleota_check()) simpleota_apply();
+    bool update = false;
+    if (simpleota_check(&update) == ESP_OK && update) simpleota_apply();
     delay(3600UL * 1000UL);
 }
 ```
@@ -476,7 +478,8 @@ Built with Arduino-ESP32 2.0.17 for the ESP32, the examples take about 17 KB les
 
 | Symptom | Likely cause |
 | --- | --- |
-| `simpleota_check()` always returns `false` | Bad token, or no active deployment targeting this device. Raise the [log level](#logging) and look for the `check:` line. |
+| `simpleota_check()` returns `ESP_FAIL` | No response, or an error status: no network, a bad token, or the server is down. Raise the [log level](#logging) and look for the `check:` line. |
+| `simpleota_check()` returns `ESP_OK` but never offers an update | No active deployment targets this device, or the build it reports is already the latest. The `check:` line shows the server's status. |
 | `update_begin_failed` | Partition table has no second OTA slot, or the OTA slot is too small for the firmware being applied. |
 | `SIMPLEOTA_CHECKSUM_FAIL` | The firmware object was replaced or corrupted on the server between the check and the download. |
 | Device is offered the same build repeatedly | The `simpleota`/`sota_build` NVS key was cleared or overwritten. See [Build numbers](#build-numbers). |
@@ -504,7 +507,8 @@ The sketch changes: 1.0.0 replaces the `SimpleOTAClient` class with the C API th
 | `SimpleOTAClient ota(token, chipFamily, deviceId, boardId, hardwareRevision)` | `cfg.token`, `cfg.chip_family`, `cfg.device_id`, `cfg.board_id`, `cfg.hardware_revision`, then `simpleota_init(&cfg)` |
 | `ota.begin(interval, onResult)` / `begin(interval, isConnected, initialDelayMs)` | `cfg.check_interval_s`, `cfg.is_connected`, `cfg.initial_delay_ms`, then `simpleota_start()`; outcomes through `cfg.event_cb` |
 | `ota.end()`, `ota.checkNow()` | `simpleota_stop()`, `simpleota_check_now()` |
-| `ota.check()`, `ota.apply()` returning `OTAResult` | `simpleota_check()`, `simpleota_apply()` returning `simpleota_result_t` (`OTA_SUCCESS` is `SIMPLEOTA_OK`, `OTA_*` is `SIMPLEOTA_*`) |
+| `ota.check()` returning `bool` | `simpleota_check(&update)`, returning `ESP_OK` when the server answered, with `update` set when it offers one |
+| `ota.apply()` returning `OTAResult` | `simpleota_apply()` returning `simpleota_result_t` (`OTA_SUCCESS` is `SIMPLEOTA_OK`, `OTA_*` is `SIMPLEOTA_*`) |
 | `ota.onEvent(cb)` | `cfg.event_cb`, with `simpleota_event_t` (`SIMPLEOTA_EVENT_*`) |
 | `ota.confirm()` / `confirmRunning()` | `simpleota_confirm()`, `ESP_OK` or `ESP_FAIL` |
 | `ota.isTrialBoot()` / `isTrialInstall()` | `simpleota_is_trial_boot()` |

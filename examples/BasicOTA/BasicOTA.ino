@@ -60,7 +60,8 @@ void loop() {
     // the sketch works: here, Wi-Fi is up. Without a trial this does nothing.
     simpleota_confirm();
 
-    if (simpleota_check()) {
+    bool update = false;
+    if (simpleota_check(&update) == ESP_OK && update) {
         simpleota_result_t r = simpleota_apply();   // restarts on success
         Serial.printf("[app] update not installed (result %d)\n", (int)r);
     }

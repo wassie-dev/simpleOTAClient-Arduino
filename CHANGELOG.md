@@ -20,6 +20,8 @@ The `SimpleOTAClient` class is replaced by the C API of the ESP-IDF component, `
 ### Added
 
 - Lifecycle events through `cfg.event_cb`: download progress, failure reasons and the trial's outcome.
+- `simpleota_check(&update)` returns `ESP_FAIL` when the server did not answer, where 0.x's `check()` returned false for that and for no update alike.
+- `SIMPLEOTA_API_VERSION`, to test at compile time for something added in a later 1.x release. `simpleota.h` states what every 1.x release keeps: a config field left at zero gets its default, nothing is changed or removed, and the `reason` tokens it lists stay.
 - `simpleota_check_now()` wakes the managed task for an immediate check, and `simpleota_current_build()` returns the build the device reports.
 - Anti-rollback: an offer whose build number is not above the running build is refused, and the server gets `failed` with `downgrade_refused`, once per boot. An old image's signature still verifies, so this stops an old, vulnerable build being pushed.
 - `cfg.image_build`: the build an image reports when it was flashed some other way than SimpleOTA, such as over USB. The running image's ELF SHA-256 is stored as `sota_image` to tell those images apart, so a device reused for another project no longer reports, and refuses offers below, the old project's build.

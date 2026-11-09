@@ -4,7 +4,7 @@
 
 ![Platform: ESP32](https://img.shields.io/badge/platform-ESP32-blue)
 ![Framework: Arduino](https://img.shields.io/badge/framework-Arduino-teal)
-![Version: 1.0.0](https://img.shields.io/badge/version-1.0.0-green)
+![Version: 1.0.1](https://img.shields.io/badge/version-1.0.1-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 Integrates your ESP32 project with SimpleOTA in a few lines: check for an update, stream and flash it with on-the-fly SHA-256 verification, and let the library handle all the protocol bookkeeping. The application owns Wi-Fi and decides when to check; this library does the rest.
@@ -207,7 +207,9 @@ Build-time knobs, as `-D` flags (PlatformIO `build_flags`; in the Arduino IDE a 
 
 The library's sources are C, so a flag must reach the C compiler: `build_flags` and `build_opt.h` both do.
 
-**Retry policy:** check-ins and status posts retry once after a 2-second delay when no response arrives (not during a trial, which sends each once). They never retry a received HTTP response. The firmware download does not retry; a failure is reported and the next check can try again.
+**Retry policy:** check-ins and status posts retry once after a 2-second delay when no response arrives (not during a trial, which sends each once). They never retry a received HTTP response. The firmware download does not retry in place; a failure is reported and a later check tries again.
+
+In managed mode, a check-in that got no answer (or a 5xx, 408 or 429) and a download that broke are tried again after 30 seconds, 2 minutes and 10 minutes, then at `check_interval_s`. A download the server refuses, a bad checksum or signature, and a flash failure wait for the next regular check. Every wait of a minute or more is spread by up to a tenth either way, so devices that power up together do not check in together from then on. In polling mode the sketch schedules its own calls.
 
 ---
 
@@ -265,7 +267,12 @@ To test against a local server, issue it a certificate from your own CA (for exa
 - Anti-rollback: an offer whose build number is not above the running build is refused (`downgrade_refused`), because an old image's signature still verifies and old builds can carry fixed bugs. To go back, release the old code under a new, higher build number. The running build is the one stored with the image SimpleOTA installed; an image flashed some other way, such as over serial, reports the build in `image_build`, or build 0, so a device reused for another project takes that project's builds.
 - Download URLs that don't begin with `https://` are rejected before any connection is made.
 - Project tokens containing CR/LF or control characters are rejected to prevent HTTP header injection.
-- The library never retries a received HTTP response; only transport-level failures trigger a retry. This prevents fleet-scale retry storms.
+- The library never retries a received HTTP response in place; only transport-level failures trigger an immediate retry, and later retries back off and are spread across the fleet. This prevents fleet-scale retry storms.
+
+### What the library cannot do for you
+
+- **The token is stored in the sketch.** A project or device token is a plain string in the firmware image, so anyone who can read the flash can read it. For a production fleet, use per-device tokens where you can, and consider [Flash Encryption](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/security/flash-encryption.html) (which, like Secure Boot, needs a build under ESP-IDF).
+- **Certificate expiry depends on the clock.** A device that has not set its time (for example over SNTP) cannot tell an expired certificate from a current one, and whether mbedTLS checks the dates at all is fixed when the Arduino core is built. Certificate revocation is never checked. The chain, the hostname and the pinned roots are always verified.
 
 ### Signed firmware
 
@@ -287,6 +294,8 @@ cfg.num_signing_keys = 1;
 ```
 
 `simpleota_init()` returns `ESP_ERR_INVALID_ARG` when a key does not parse. See `examples/SignedOTA`.
+
+**Set both.** Keys only bind together with `SIMPLEOTA_SECURITY_SIGNED`. With keys pinned and any other mode, an update the server marks unsigned is still installed on its checksum alone, and `simpleota_init()` logs a warning saying so.
 
 The signature (delivered in the `/check/` response for signed artifacts) is verified incrementally over the exact downloaded bytes, in the same streaming pass as the SHA-256 checksum, **before** the new image is marked bootable. No extra RAM buffer, no second pass over flash.
 

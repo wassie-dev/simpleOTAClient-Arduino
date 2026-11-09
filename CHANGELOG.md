@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.1
+
+Fixes from a security and robustness review, by moving to [SimpleOTAClient-core](https://github.com/wassie-dev/simpleOTAClient-core) 1.0.1. No API change, no sketch change, and nothing stored in NVS changes.
+
+### Changed
+
+- **A dropped connection no longer costs a whole check interval.** In managed mode, a check-in that got no answer (or a 5xx, 408 or 429) and a download that broke are tried again after 30 s, 2 min and 10 min, then at `check_interval_s`. Each failed download still reports `failed`.
+- **Check-ins are spread.** Every wait of a minute or more moves by up to a tenth either way, so devices that power up together do not check in together from then on.
+- `simpleota_init()` warns when signing keys are pinned without `SIMPLEOTA_SECURITY_SIGNED`: in any other mode an update the server marks unsigned is installed on its checksum. The README's *Signed firmware* section says so too.
+- A check that offers nothing no longer allocates the 2 KB URL buffer.
+- The README's *Security* section covers what the library cannot do: the token is readable from flash, and certificate expiry needs a set clock.
+
+### Fixed
+
+- A check response cut off inside a value, such as one longer than the 4 KB buffer, could be read as a complete, shorter value. It is now an unusable offer.
+- `\uXXXX` escapes in a check response are decoded. A server or proxy that writes `&` as `\u0026` no longer breaks the pre-signed download URL.
+- A download longer than the announced size stops at once, before the excess is written to flash. The reason is `short_read`, as before.
+
 ## 1.0.0
 
 The `SimpleOTAClient` class is replaced by the C API of the ESP-IDF component, `simpleota.h`. Both clients are now [SimpleOTAClient-core](https://github.com/wassie-dev/simpleOTAClient-core), copied into `src/sota_core`, built from the same sources with the same features, defaults and behaviour. Code that uses SimpleOTA moves between Arduino and ESP-IDF unchanged.

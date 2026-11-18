@@ -38,9 +38,11 @@ void setup() {
     Serial.println(FIRMWARE_VERSION);
     connectWiFi();
 
-    // TLS is always verified, by default against the ISRG roots that
-    // SimpleOTA's hosts use. For a local server, also set cfg.base_url and
-    // cfg.cert_pem to your own CA.
+    // TLS is always verified. By default that is against the ESP-IDF
+    // certificate bundle on Arduino-ESP32 2.0.4 and later, and against ISRG
+    // Root X1 and X2 and GTS Root R4 on 2.0.0 to 2.0.3. cfg.cert_pem, when
+    // set, replaces the default. For a local server, also set cfg.base_url
+    // and cfg.cert_pem to your own CA.
     simpleota_config_t cfg = {};
     cfg.token = SOTA_TOKEN;
     cfg.version_label = FIRMWARE_VERSION;

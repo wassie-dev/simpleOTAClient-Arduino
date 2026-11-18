@@ -256,7 +256,7 @@ The integrity guarantee of this library rests on the SHA-256 `checksum` field fr
 
 Without `cert_pem`, the library verifies TLS against the ESP-IDF certificate bundle that Arduino-ESP32 2.0.4 and later link, the same default as the ESP-IDF component. Its public roots cover both the SimpleOTA API and the firmware download endpoint, and keep working if a host's certificate moves to another public CA in the bundle. Arduino-ESP32 2.0.0 to 2.0.3 do not link the bundle; there the library verifies against the bundled ISRG Root X1, ISRG Root X2 and GTS Root R4 certificates instead. No additional configuration is needed for production.
 
-On Arduino-ESP32 3.0.4 and later, `setCACertBundle(bundle, size)` installs its bundle for the whole application, so it becomes this library's trust too: if you call it with a bundle that lacks the roots SimpleOTA's hosts chain to, set `cert_pem`. On 2.x, `WiFiClientSecure` keeps its own bundle and does not affect this library.
+On Arduino-ESP32 3.0.4 and later, `setCACertBundle(bundle, size)` installs its bundle for the whole application, so it becomes this library's trust too: if you call it with a bundle that lacks the roots SimpleOTA's hosts chain to, set `cert_pem`. On any 3.x, `setCACertBundle(NULL)` detaches the bundle for the whole application, so do not call it while an update check may be running. On 2.x, `WiFiClientSecure` keeps its own bundle and does not affect this library.
 
 ### TLS is always verified
 
@@ -470,7 +470,7 @@ For mixed schemes in one fleet, set [`partition_profile`](https://wassie-dev.git
 
 ## Footprint
 
-The default TLS trust links Arduino-ESP32's certificate bundle, which adds about 63 KB of flash on 2.x and 63 to 68 KB on 3.x to a sketch that does not already link it, and no static RAM to speak of. Built for the ESP32, BasicOTA is about 63 KB larger for it with Arduino-ESP32 2.0.17, and about 68 KB with 3.3.0. The library uses `esp_http_client`, not `HTTPClient`, so a sketch that also uses `HTTPClient` links both HTTP stacks, about 23 KB more than it would with one. mbedTLS is shared.
+The default TLS trust links Arduino-ESP32's certificate bundle. BasicOTA for the ESP32 is 63,792 bytes larger than with 1.0.0 on Arduino-ESP32 2.0.17, and 68,820 bytes larger on 3.3.0, most of it the bundle. The library uses `esp_http_client`, not `HTTPClient`, so a sketch that also uses `HTTPClient` links both HTTP stacks, about 23 KB more than it would with one. mbedTLS is shared.
 
 ---
 

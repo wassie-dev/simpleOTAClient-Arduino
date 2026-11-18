@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.0.1
+
+Fixes from a security and robustness review, and wider default TLS trust, by moving to [SimpleOTAClient-core](https://github.com/wassie-dev/simpleOTAClient-core) 1.0.1. No API change, no sketch change, and nothing stored in NVS changes.
+
+### Upgrading
+
+- **TLS is verified against Arduino-ESP32's certificate bundle by default.** On Arduino-ESP32 2.0.4 and later, the first cores that link the ESP-IDF certificate bundle, a config without `cert_pem` verifies TLS against that bundle, as the ESP-IDF component does, instead of only the ISRG Root X1 and X2 certificates. A SimpleOTA host whose certificate moves to another public CA in the bundle keeps working. The bundle is the one in the core you build with, and it keeps each root's name and key only, so a root's own expiry and constraints are not checked. `cert_pem` still replaces it.
+- **On Arduino-ESP32 2.0.0 to 2.0.3**, which do not link the bundle, the default is ISRG Root X1 and X2 plus GTS Root R4, so a certificate from Google Trust Services' WE1 verifies too. For any other CA, set `cert_pem`.
+- **The bundle costs flash:** BasicOTA for the ESP32 is 63,792 bytes larger than with 1.0.0 on Arduino-ESP32 2.0.17, and 68,820 bytes larger on 3.3.0, about the size of the bundle.
+- **`setCACertBundle(bundle, size)` on Arduino-ESP32 3.0.4 and later** installs its bundle for the whole application, so it becomes this client's trust too. If you pass it a bundle without the roots SimpleOTA's hosts chain to, set `cert_pem`. On any 3.x, `setCACertBundle(NULL)` detaches the bundle for the whole application, so do not call it while an update check may be running. On 2.x, `WiFiClientSecure` keeps its own bundle and does not affect this client.
+- **A custom build with `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE` turned off**, on Arduino-ESP32 2.0.4 or later: `simpleota_init()` returns `ESP_ERR_INVALID_STATE` unless `cert_pem` or `crt_bundle_attach` is set.
+
+### Changed
+
+- **A dropped connection no longer costs a whole check interval.** In managed mode, a check-in that got no answer (or a 5xx, 408 or 429) and a download that broke are tried again after 30 s, 2 min and 10 min, then at `check_interval_s`. A check-in that ran out of memory, and a download that could not allocate its redirect buffer (reported as `https_begin_failed`), are retried the same way. Each failed download still reports `failed`.
+- **Check-ins are spread.** Every wait of a minute or more moves by up to about a tenth either way, so devices that power up together do not check in together from then on.
+- `simpleota_init()` warns when signing keys are pinned without `SIMPLEOTA_SECURITY_SIGNED`: in any other mode an update the server marks unsigned is installed on its checksum. The README's *Signed firmware* section says so too.
+- A check that offers nothing no longer allocates the 2 KB URL buffer.
+- The README's *Security* section covers what the library cannot do: the token is readable from flash, and certificate expiry needs a set clock.
+
+### Fixed
+
+- A check response cut off inside a value, such as one longer than the 4 KB buffer, could be read as a complete, shorter value. It is now an unusable offer.
+- `\uXXXX` escapes in a check response are decoded, a surrogate pair as one character. A server or proxy that writes `&` as `\u0026` no longer breaks the pre-signed download URL.
+- **The download is held to the offer's `size`**, which comes with its checksum, instead of the download's Content-Length. Until now a host that sent more or fewer bytes than `size`, with a Content-Length to match, had all of them written to flash, and the update failed only on its checksum. Now a Content-Length that differs from `size` fails with `short_read` before the update slot is opened, and a stream that runs past `size` stops before the excess is written. A download longer than `size` waits for the next regular check; a shorter one is retried early. An offer without a `size` falls back to the Content-Length, as before.
+
 ## 1.0.0
 
 The `SimpleOTAClient` class is replaced by the C API of the ESP-IDF component, `simpleota.h`. Both clients are now [SimpleOTAClient-core](https://github.com/wassie-dev/simpleOTAClient-core), copied into `src/sota_core`, built from the same sources with the same features, defaults and behaviour. Code that uses SimpleOTA moves between Arduino and ESP-IDF unchanged.

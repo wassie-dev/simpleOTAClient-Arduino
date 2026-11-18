@@ -63,7 +63,7 @@ Starting a new project? [simpleOTA-starter-arduino](https://github.com/wassie-de
 - **Anti-rollback:** an offer older than the running build is refused. See [Anti-rollback](#anti-rollback).
 - **No external dependencies:** uses `esp_http_client`, OTA and NVS from the ESP-IDF inside Arduino-ESP32. The library is [SimpleOTAClient-core](https://github.com/wassie-dev/simpleOTAClient-core), copied into `src/sota_core`, with a vendored copy of [Monocypher](https://monocypher.org) 3.1.3 for Ed25519; nothing to install.
 - **Compatible with Arduino-ESP32 2.x and 3.x**.
-- **Secure by default:** TLS is always verified, against the bundled ISRG Root X1 and X2 certificates that SimpleOTA's hosts chain to; no configuration needed for production.
+- **Secure by default:** TLS is always verified, against the certificate bundle built into Arduino-ESP32 2.0.4 and later (on 2.0.0 to 2.0.3, against the bundled ISRG Root X1, ISRG Root X2 and GTS Root R4 certificates); no configuration needed for production.
 
 ---
 
@@ -180,7 +180,7 @@ SimpleOTA assigns its own **strictly monotonic build number** each time you uplo
 
 The **[API reference](https://wassie-dev.github.io/simpleOTAClient-core/latest/)** documents every function, result, event and configuration field. It is generated from [`src/simpleota.h`](src/simpleota.h), which has the same comments. In short:
 
-- Fill a [`simpleota_config_t`](https://wassie-dev.github.io/simpleOTAClient-core/latest/structsimpleota__config__t.html) from `{}` and call `simpleota_init()` early in `setup()`. Strings are copied. On Arduino, `chip_family` defaults to the chip the sketch is built for, and TLS is verified against the ISRG Root X1 and X2 certificates unless you set `cert_pem`.
+- Fill a [`simpleota_config_t`](https://wassie-dev.github.io/simpleOTAClient-core/latest/structsimpleota__config__t.html) from `{}` and call `simpleota_init()` early in `setup()`. Strings are copied. On Arduino, `chip_family` defaults to the chip the sketch is built for, and TLS is verified against the [default trust](#default-mode-secure) unless you set `cert_pem`.
 - Managed mode: `simpleota_start()`, `simpleota_stop()`, `simpleota_check_now()`.
 - Polling mode: `simpleota_check()`, then `simpleota_apply()`, from one task of yours, such as `loop()`.
 - Trials: `simpleota_confirm()`, `simpleota_is_trial_boot()`.
@@ -209,7 +209,7 @@ The library's sources are C, so a flag must reach the C compiler: `build_flags` 
 
 **Retry policy:** check-ins and status posts retry once after a 2-second delay when no response arrives (not during a trial, which sends each once). They never retry a received HTTP response. The firmware download does not retry in place; a failure is reported and a later check tries again.
 
-In managed mode, a check-in that got no answer (or a 5xx, 408 or 429) and a download that broke are tried again after 30 seconds, 2 minutes and 10 minutes, then at `check_interval_s`. A download the server refuses, a bad checksum or signature, and a flash failure wait for the next regular check. Every wait of a minute or more is spread by up to a tenth either way, so devices that power up together do not check in together from then on. In polling mode the sketch schedules its own calls.
+In managed mode, a check-in that got no answer (or a 5xx, 408 or 429) and a download that broke are tried again after 30 seconds, 2 minutes and 10 minutes, then at `check_interval_s`. A download the server refuses, one longer than the offer's `size`, a bad checksum or signature, and a flash failure wait for the next regular check. Every wait of a minute or more is spread by up to about a tenth either way, so devices that power up together do not check in together from then on. In polling mode the sketch schedules its own calls.
 
 ---
 
@@ -236,8 +236,8 @@ Failures report `failed` with a reason token that the dashboard shows inline on 
 | `update_begin_failed` | The update slot could not be opened: no second OTA slot, or the image is larger than the slot |
 | `update_write_failed` | A flash write failed during the download |
 | `stream_error` | The connection broke during the download |
-| `download_stalled` | No bytes arrived for `CONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS` |
-| `short_read` | The download ended before its size |
+| `download_stalled` | The download stopped sending; reported one to two `CONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS` after its last byte |
+| `short_read` | The download was not the offer's `size` (without one, its Content-Length) |
 | `checksum_mismatch` | The SHA-256 of the download did not match the offer |
 | `update_end_failed` | The image failed ESP-IDF's image check, or the boot slot could not be switched |
 | `state_save_failed` | The trial record could not be saved to NVS before the slot switch |
@@ -254,7 +254,9 @@ The integrity guarantee of this library rests on the SHA-256 `checksum` field fr
 
 ### Default mode: secure
 
-Without `cert_pem`, the library verifies TLS against the bundled ISRG Root X1 and X2 certificates. They cover both the SimpleOTA API and the firmware download endpoint. No additional configuration is needed for production.
+Without `cert_pem`, the library verifies TLS against the ESP-IDF certificate bundle that Arduino-ESP32 2.0.4 and later link, the same default as the ESP-IDF component. Its public roots cover both the SimpleOTA API and the firmware download endpoint, and keep working if a host's certificate moves to another public CA in the bundle. Arduino-ESP32 2.0.0 to 2.0.3 do not link the bundle; there the library verifies against the bundled ISRG Root X1, ISRG Root X2 and GTS Root R4 certificates instead. No additional configuration is needed for production.
+
+On Arduino-ESP32 3.0.4 and later, `setCACertBundle(bundle, size)` installs its bundle for the whole application, so it becomes this library's trust too: if you call it with a bundle that lacks the roots SimpleOTA's hosts chain to, set `cert_pem`. On 2.x, `WiFiClientSecure` keeps its own bundle and does not affect this library.
 
 ### TLS is always verified
 
@@ -272,7 +274,7 @@ To test against a local server, issue it a certificate from your own CA (for exa
 ### What the library cannot do for you
 
 - **The token is stored in the sketch.** A project or device token is a plain string in the firmware image, so anyone who can read the flash can read it. For a production fleet, use per-device tokens where you can, and consider [Flash Encryption](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/security/flash-encryption.html) (which, like Secure Boot, needs a build under ESP-IDF).
-- **Certificate expiry depends on the clock.** A device that has not set its time (for example over SNTP) cannot tell an expired certificate from a current one, and whether mbedTLS checks the dates at all is fixed when the Arduino core is built. Certificate revocation is never checked. The chain, the hostname and the pinned roots are always verified.
+- **Certificate expiry depends on the clock.** A device that has not set its time (for example over SNTP) cannot tell an expired certificate from a current one, and whether mbedTLS checks the dates at all is fixed when the Arduino core is built. Certificate revocation is never checked. The chain, the hostname and the trusted roots are always verified. The certificate bundle keeps each root's name and key only, so a root's own expiry and constraints are not checked.
 
 ### Signed firmware
 
@@ -468,7 +470,7 @@ For mixed schemes in one fleet, set [`partition_profile`](https://wassie-dev.git
 
 ## Footprint
 
-Built with Arduino-ESP32 2.0.17 for the ESP32, the examples take about 17 KB less flash than with 0.6.0, and the same static RAM. The library uses `esp_http_client`, not `HTTPClient`, so a sketch that also uses `HTTPClient` links both HTTP stacks, about 23 KB more than it would with one. mbedTLS is shared.
+The default TLS trust links Arduino-ESP32's certificate bundle, which adds about 63 KB of flash on 2.x and 63 to 68 KB on 3.x to a sketch that does not already link it, and no static RAM to speak of. Built for the ESP32, BasicOTA is about 63 KB larger for it with Arduino-ESP32 2.0.17, and about 68 KB with 3.3.0. The library uses `esp_http_client`, not `HTTPClient`, so a sketch that also uses `HTTPClient` links both HTTP stacks, about 23 KB more than it would with one. mbedTLS is shared.
 
 ---
 
@@ -480,7 +482,7 @@ Built with Arduino-ESP32 2.0.17 for the ESP32, the examples take about 17 KB les
 | One client per device | The trial record and the boot slot belong to the device. A second `simpleota_init()` returns `ESP_ERR_INVALID_STATE`. |
 | No automatic `reboot` event with `disable_auto_reboot` | The library only reports `reboot` on the reboot it controls. Call `simpleota_reboot_for_update()`, which reports it and then restarts, instead of `ESP.restart()`; see AdvancedOTA. |
 | The sketch owns connectivity | The library works over any network interface and does not manage Wi-Fi, Ethernet, PPP, or reconnects. Give it `is_connected`, or check only once there is an IP. |
-| Default CA | The ISRG Root X1 and X2 certificates cover current SimpleOTA infrastructure. If the platform moves to a host under another root, set `cert_pem`, or update the library. |
+| Default CA | The certificate bundle is the one in the Arduino-ESP32 core you build with, so its roots are only as current as that core. On 2.0.0 to 2.0.3 the default is ISRG Root X1 and X2 and GTS Root R4 only. If the platform moves to a host under a root your default does not hold, set `cert_pem`, or update the core or the library. |
 
 ---
 
@@ -502,7 +504,7 @@ Built with Arduino-ESP32 2.0.17 for the ESP32, the examples take about 17 KB les
 
 ## Arduino and ESP-IDF
 
-The [ESP-IDF component](https://github.com/wassie-dev/simpleOTAClient-ESP-IDF) is this same client: the same `simpleota.h`, built from the same sources, so code that uses SimpleOTA works unchanged in an ESP-IDF app. Two things differ, because Arduino-ESP32 has no Kconfig and no certificate bundle: the build-time knobs are `-D` flags here and menuconfig options there, with the same names and defaults; and without `cert_pem`, this library verifies TLS against the ISRG roots while the component uses ESP-IDF's certificate bundle.
+The [ESP-IDF component](https://github.com/wassie-dev/simpleOTAClient-ESP-IDF) is this same client: the same `simpleota.h`, built from the same sources, so code that uses SimpleOTA works unchanged in an ESP-IDF app. Because Arduino-ESP32 has no Kconfig, the build-time knobs are `-D` flags here and menuconfig options there, with the same names and defaults. Without `cert_pem`, both verify TLS against ESP-IDF's certificate bundle, except on Arduino-ESP32 2.0.0 to 2.0.3, which do not link it: there this library uses ISRG Root X1 and X2 and GTS Root R4.
 
 ---
 

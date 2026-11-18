@@ -470,7 +470,7 @@ For mixed schemes in one fleet, set [`partition_profile`](https://wassie-dev.git
 
 ## Footprint
 
-The default TLS trust links Arduino-ESP32's certificate bundle. BasicOTA for the ESP32 is 63,792 bytes larger than with 1.0.0 on Arduino-ESP32 2.0.17, and 68,820 bytes larger on 3.3.0, most of it the bundle. The library uses `esp_http_client`, not `HTTPClient`, so a sketch that also uses `HTTPClient` links both HTTP stacks, about 23 KB more than it would with one. mbedTLS is shared.
+The default TLS trust links Arduino-ESP32's certificate bundle. BasicOTA for the ESP32 is 63,792 bytes larger than with 1.0.0 on Arduino-ESP32 2.0.17, and 68,820 bytes larger on 3.3.0, about the size of the bundle. The library uses `esp_http_client`, not `HTTPClient`, so a sketch that also uses `HTTPClient` links both HTTP stacks, about 23 KB more than it would with one. mbedTLS is shared.
 
 ---
 

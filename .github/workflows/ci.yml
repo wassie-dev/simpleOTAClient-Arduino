@@ -1,5 +1,6 @@
 # Lints the library with arduino-lint and compiles all examples against
-# Arduino-ESP32 on every push to main and every pull request.
+# Arduino-ESP32 on every push to main and every pull request, and checks
+# that the build flags add or leave out what they say.
 
 name: CI
 
@@ -108,3 +109,39 @@ jobs:
           if [ "$want_hook" = 1 ]; then
             "$nm_bin" build/BasicOTA.ino.elf | grep -E ' T verifyRollbackLater$'
           fi
+
+  signed-updates:
+    name: Signed updates in and out (core ${{ matrix.core }}, ${{ matrix.flags || 'default' }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        core: ["2.0.17", "3.3.0"]
+        flags: ["", "-DSIMPLEOTA_DISABLE_SIGNED_UPDATES"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: Compile BasicOTA and check that the Ed25519 verifier is linked only when wanted
+        run: |
+          set -euo pipefail
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls \
+            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@${{ matrix.core }}
+          arduino-cli compile --fqbn esp32:esp32:esp32 --library "$PWD" \
+            --warnings all --build-path "$PWD/build" \
+            --build-property "compiler.cpp.extra_flags=${{ matrix.flags }}" \
+            --build-property "compiler.c.extra_flags=${{ matrix.flags }}" \
+            examples/BasicOTA
+          nm_bin=$(find "$HOME/.arduino15/packages/esp32/tools" -name 'xtensa-esp*-elf-nm' | head -1)
+          verifier=$("$nm_bin" build/BasicOTA.ino.elf | grep -cE ' T (crypto_ed25519_check_init|sota_verifier_begin|sota_manifest_feed)$' || true)
+          case "${{ matrix.flags }}" in
+            "")                                 want=3 ;;
+            -DSIMPLEOTA_DISABLE_SIGNED_UPDATES) want=0 ;;
+          esac
+          echo "Ed25519 verifier and strict signature symbols: $verifier (want $want)"
+          [ "$verifier" = "$want" ]

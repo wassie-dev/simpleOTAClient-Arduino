@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.2.0
+
+Strict signing, putting an update off, and Retry-After, by moving to [SimpleOTAClient-core](https://github.com/wassie-dev/simpleOTAClient-core) 1.2.0 (1fff3e4), which also brings core 1.1.0. API 1.2 (`SIMPLEOTA_API_VERSION_MINOR` is 2): additions only. A sketch written for 1.0.1 builds unchanged, and with the new fields left at zero it behaves as before, apart from the two changes under *Changed*. Nothing stored in NVS changes.
+
+### Added
+
+- **Strict signing**, `SIMPLEOTA_SECURITY_STRICT`. The image signature does not cover the build number, which the server assigns, so a server that was taken over could offer an old signed image under a higher build number, or another project's image when two projects share a key. The SimpleOTA CLI now makes a second signature with the same key over the project id, the key id, the build number and the image's SHA-256, and in strict signing the device checks it before it downloads anything. An update without one that verifies is refused with `SIMPLEOTA_SIGNATURE_FAIL` and reason `signature_invalid`. It needs a signing key and `project_id`; `simpleota_init()` returns `ESP_ERR_INVALID_ARG` without either. On check-ins the device reports `security_mode` `signed` and `"require_manifest":true`. See the README's *Strict signing* section and `examples/StrictOTA`.
+- **`cfg.project_id`**, the project's UUID, lowercase with hyphens. With it and a key pinned, a device in any mode checks a strict signature when the offer carries one, and refuses a wrong one, so a signed fleet can prove its strict signatures before it moves to strict signing. Outside strict signing that is a rehearsal, not the protection: a server can leave the strict signature out. `simpleota_init()` returns `ESP_ERR_INVALID_ARG` for a non-empty value in any other form.
+- **`cfg.can_update`**: in managed mode the sketch can put an offered update off, on low battery or during work that must not be interrupted. Nothing is downloaded, and the next check, or `simpleota_check_now()`, asks again. Polling mode does not call it.
+- **`-DSIMPLEOTA_DISABLE_SIGNED_UPDATES`** builds the library without the Ed25519 verifier, for devices that never take a signed update. `simpleota_init()` then refuses signing keys, `SIMPLEOTA_SECURITY_SIGNED` and `SIMPLEOTA_SECURITY_STRICT`, and a signed offer is handled as on a device with no key pinned.
+
+### Changed
+
+- In managed mode, a check-in answered with 429 or 503 and a `Retry-After` in seconds waits at least that long, a day at most, plus up to a tenth so a fleet does not come back at once. A trial keeps its quick checks.
+- A download whose first bytes are not a firmware image for this chip fails with the new reason `image_mismatch`, before anything is written. An `event_cb` that matches reason tokens sees it where it saw another failure reason before.
+
+### Footprint
+
+BasicOTA is 1,500 bytes larger than with 1.0.1 for the ESP32 and 1,626 bytes for the ESP32-C6, on Arduino-ESP32 3.3.0. During an update with strict signing, or with `project_id` and an offer that carries a strict signature, a second verifier is on the heap for a moment (about 700 bytes), freed before the download starts. `-DSIMPLEOTA_DISABLE_SIGNED_UPDATES` makes BasicOTA for the ESP32 14,552 bytes smaller.
+
+### Fixed
+
+- Signing key ids of up to 64 characters, as the platform and the CLI allow, can be pinned and are read from offers. Before, a 64-character key id failed `simpleota_init()`, and in an offer it was dropped. An offer whose key id is longer than 64 characters, or not a string, has no usable signature.
+
 ## 1.0.1
 
 Fixes from a security and robustness review, and wider default TLS trust, by moving to [SimpleOTAClient-core](https://github.com/wassie-dev/simpleOTAClient-core) 1.0.1. No API change, no sketch change, and nothing stored in NVS changes.

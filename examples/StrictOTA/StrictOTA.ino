@@ -53,8 +53,8 @@ static void onOtaEvent(const simpleota_event_t* e, void*) {
     if (e->reason && strcmp(e->reason, "signature_invalid") == 0) {
         // Either the strict signature failed or the image signature failed.
         // A strict failure logs its own error line just before the generic
-        // "update failed: signature_invalid" line. If that line is not
-        // there, it was the image signature.
+        // "update failed: signature_invalid" line. If there is no such
+        // error line, it was the image signature.
         Serial.println("[app] OTA rejected: signature invalid!");
     } else {
         Serial.printf("[app] OTA failed: %s\n", e->reason ? e->reason : "?");

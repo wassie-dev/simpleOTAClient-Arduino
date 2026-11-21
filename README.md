@@ -4,7 +4,7 @@
 
 ![Platform: ESP32](https://img.shields.io/badge/platform-ESP32-blue)
 ![Framework: Arduino](https://img.shields.io/badge/framework-Arduino-teal)
-![Version: 1.0.1](https://img.shields.io/badge/version-1.0.1-green)
+![Version: 1.2.0](https://img.shields.io/badge/version-1.2.0-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 Integrates your ESP32 project with SimpleOTA in a few lines: check for an update, stream and flash it with on-the-fly SHA-256 verification, and let the library handle all the protocol bookkeeping. The application owns Wi-Fi and decides when to check; this library does the rest.
@@ -58,7 +58,7 @@ Starting a new project? [simpleOTA-starter-arduino](https://github.com/wassie-de
 - **Streaming download with on-the-fly SHA-256:** firmware is verified before the partition is committed; no second pass, no large RAM buffer.
 - **NVS build-number persistence:** the library reads and writes the SimpleOTA-assigned build number automatically.
 - **Status event reporting:** reports the full update lifecycle back to the SimpleOTA backend.
-- **On-device firmware signature verification:** signed artifacts are verified against your pinned Ed25519 public key, streamed during download, before the image is ever marked bootable. See [Signed firmware](#signed-firmware).
+- **On-device firmware signature verification:** signed artifacts are verified against your pinned Ed25519 public key, streamed during download, before the image is ever marked bootable. Strict signing also checks a second signature over the project id, the build number and the image's SHA-256 before the download starts. See [Signed firmware](#signed-firmware).
 - **Trial install with rollback:** every new image runs as a trial, and goes back to the previous image if it crashes, hangs, or is not confirmed within the confirm timeout. See [Rollback](#rollback).
 - **Anti-rollback:** an offer older than the running build is refused. See [Anti-rollback](#anti-rollback).
 - **No external dependencies:** uses `esp_http_client`, OTA and NVS from the ESP-IDF inside Arduino-ESP32. The library is [SimpleOTAClient-core](https://github.com/wassie-dev/simpleOTAClient-core), copied into `src/sota_core`, with a vendored copy of [Monocypher](https://monocypher.org) 3.1.3 for Ed25519; nothing to install.
@@ -185,6 +185,8 @@ The **[API reference](https://wassie-dev.github.io/simpleOTAClient-core/latest/)
 - Polling mode: `simpleota_check()`, then `simpleota_apply()`, from one task of yours, such as `loop()`.
 - Trials: `simpleota_confirm()`, `simpleota_is_trial_boot()`.
 - With `disable_auto_reboot`: `simpleota_reboot_for_update()`.
+- Managed mode can put an offered update off: `can_update` (since API 1.1). See [Putting an update off](#putting-an-update-off).
+- Strict signing: `SIMPLEOTA_SECURITY_STRICT` and `project_id` (since API 1.2). See [Strict signing](#strict-signing).
 - Also `simpleota_set_server_url()`, `simpleota_current_build()`, `simpleota_last_offered_version()` and `simpleota_deinit()`.
 
 `event_cb` runs on the task doing the work: keep it short, and call only `simpleota_reboot_for_update()` from it. The `reason` tokens that events and the dashboard show are listed under [Update lifecycle](#update-lifecycle) and [Rollback](#rollback).
@@ -204,12 +206,13 @@ Build-time knobs, as `-D` flags (PlatformIO `build_flags`; in the Arduino IDE a 
 | `CONFIG_SIMPLEOTA_TASK_PRIORITY` | `5` | The managed task's priority |
 | `SIMPLEOTA_DISABLE_TRIAL_WATCHDOG` | unset | Leave the chip watchdog out. Crashes and resets still roll back |
 | `SIMPLEOTA_DISABLE_BOOTLOADER_ROLLBACK` | unset | Do not define `verifyRollbackLater()`; the library rolls back by itself, which misses an image that crashes before `simpleota_init()` on every boot |
+| `SIMPLEOTA_DISABLE_SIGNED_UPDATES` | unset | Leave the Ed25519 verifier out, for a device that never takes a signed update. `simpleota_init()` then refuses signing keys, `SIMPLEOTA_SECURITY_SIGNED` and `SIMPLEOTA_SECURITY_STRICT`, and a signed offer is handled as on a device with no key pinned. Every source file of the library needs the flag |
 
 The library's sources are C, so a flag must reach the C compiler: `build_flags` and `build_opt.h` both do.
 
 **Retry policy:** check-ins and status posts retry once after a 2-second delay when no response arrives (not during a trial, which sends each once). They never retry a received HTTP response. The firmware download does not retry in place; a failure is reported and a later check tries again.
 
-In managed mode, a check-in that got no answer (or a 5xx, 408 or 429) and a download that broke are tried again after 30 seconds, 2 minutes and 10 minutes, then at `check_interval_s`. A download the server refuses, one longer than the offer's `size`, a bad checksum or signature, and a flash failure wait for the next regular check. Every wait of a minute or more is spread by up to about a tenth either way, so devices that power up together do not check in together from then on. In polling mode the sketch schedules its own calls.
+In managed mode, a check-in that got no answer (or a 5xx, 408 or 429) and a download that broke are tried again after 30 seconds, 2 minutes and 10 minutes, then at `check_interval_s`. A check-in answered with 429 or 503 and a `Retry-After` in seconds waits at least that long, a day at most, plus up to a tenth so a fleet does not come back at once; a trial keeps its quick checks. A download the server refuses, one longer than the offer's `size`, a bad checksum or signature, and a flash failure wait for the next regular check. Every wait of a minute or more is spread by up to about a tenth either way, so devices that power up together do not check in together from then on. In polling mode the sketch schedules its own calls.
 
 ---
 
@@ -228,12 +231,13 @@ Failures report `failed` with a reason token that the dashboard shows inline on 
 | --- | --- |
 | `downgrade_refused` | The offered build is not above the running one (reported once per boot) |
 | `insecure_url` | The download URL is not `https://` |
-| `signature_invalid` | A signed offer failed Ed25519 verification, or a required signature is missing |
+| `signature_invalid` | A signed offer failed Ed25519 verification, or a required signature is missing; with `project_id`, also a strict signature that is missing in strict signing or does not verify |
 | `https_begin_failed` | The download connection could not be opened |
 | `http_status_<N>` | The download returned HTTP N, or a fourth redirect |
 | `redirect_not_https` | A download redirect led to a plain HTTP URL |
 | `redirect_malformed` | A download redirect had no usable `Location` |
 | `update_begin_failed` | The update slot could not be opened: no second OTA slot, or the image is larger than the slot |
+| `image_mismatch` | The download's first bytes are not a firmware image for this chip; nothing was written |
 | `update_write_failed` | A flash write failed during the download |
 | `stream_error` | The connection broke during the download |
 | `download_stalled` | The download stopped sending; reported one to two `CONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS` after its last byte |
@@ -243,6 +247,18 @@ Failures report `failed` with a reason token that the dashboard shows inline on 
 | `state_save_failed` | The trial record could not be saved to NVS before the slot switch |
 
 Once a boot has worked out what happened to a trial, its `confirmed` or `rolled_back` report goes to an outbox in NVS (two slots, oldest dropped first) and never holds up an update. Reports are kept until the server answers, across reboots: any HTTP response counts as delivered, and the device does not act on what it says. Without a response the report is sent again, first after 10 s (three times), then at the normal check interval.
+
+### Putting an update off
+
+In managed mode, `cfg.can_update` is asked when an update is offered, after `SIMPLEOTA_EVENT_UPDATE_AVAILABLE` and before the download. Return `false` to put the update off, for example on low battery or during work that must not be interrupted: nothing is downloaded, and the next check asks again. Call `simpleota_check_now()` to bring that check forward once the device is ready. It runs on the managed task and gets `cfg.user_ctx`: keep it quick, and don't call the client from it. Left `NULL`, every offer is taken. Polling mode does not call it; there the sketch decides by calling `simpleota_apply()` or not.
+
+```cpp
+static bool otaAllowed(void*) {
+    return batteryMillivolts() > 3600 && !jobRunning();
+}
+// ...
+cfg.can_update = otaAllowed;
+```
 
 ---
 
@@ -297,12 +313,12 @@ cfg.num_signing_keys = 1;
 
 `simpleota_init()` returns `ESP_ERR_INVALID_ARG` when a key does not parse. See `examples/SignedOTA`.
 
-**Set both.** Keys only bind together with `SIMPLEOTA_SECURITY_SIGNED`. With keys pinned and any other mode, an update the server marks unsigned is still installed on its checksum alone, and `simpleota_init()` logs a warning saying so.
+**Set both.** Keys only bind together with `SIMPLEOTA_SECURITY_SIGNED` or `SIMPLEOTA_SECURITY_STRICT`. With keys pinned and any other mode, an update the server marks unsigned is still installed on its checksum alone, and `simpleota_init()` logs a warning saying so.
 
 The signature (delivered in the `/check/` response for signed artifacts) is verified incrementally over the exact downloaded bytes, in the same streaming pass as the SHA-256 checksum, **before** the new image is marked bootable. No extra RAM buffer, no second pass over flash.
 
 A device is **enforcing** once it both reports signed mode
-(`SIMPLEOTA_SECURITY_SIGNED`) and has a key pinned. For an
+(`SIMPLEOTA_SECURITY_SIGNED` or `SIMPLEOTA_SECURITY_STRICT`) and has a key pinned. For an
 enforcing device the decision is made from device state, not from what the
 offer claims, so a compromised server or MITM cannot downgrade it by
 stripping the signature fields:
@@ -314,6 +330,8 @@ stripping the signature fields:
 | Signature missing, or offer arrives **without** signed fields | yes | Rejected before the download even starts (same `SIMPLEOTA_SIGNATURE_FAIL` / `signature_invalid`). This is the anti-downgrade guarantee. |
 | Signed | no key pinned | Applied with checksum verification only, plus a logged warning on each such apply. Keeps fleet migration safe (below). |
 | Not signed | not enforcing | Identical to previous releases. |
+
+Strict signing adds its own check before these; see [Strict signing](#strict-signing).
 
 #### How the server matches modes
 
@@ -340,6 +358,33 @@ Do not upload the migration build itself as `signed`: devices explicitly reporti
 > **Watch for stragglers.** After migrating, check the project device list for devices still reporting `basic` (stuck on an old build): they missed the migration artifact and will receive nothing once you publish only signed uploads.
 
 **Key rotation:** create the new key server-side, ship a firmware update pinning **both** keys in `signing_keys`, start signing with the new key, then revoke the old key server-side and drop it from the next firmware.
+
+#### Strict signing
+
+The image signature covers the firmware bytes only, and the server assigns the build number. So a server that was taken over could offer an old signed image under a higher build number, or another project's image when two projects share a key. Strict signing closes that: the SimpleOTA CLI makes a second signature with the same key once it knows the build number, over the project id, the key id, the build number and the image's SHA-256. The device writes the same text from its own `project_id` and the offer, and checks that signature before it downloads anything.
+
+The two signed modes, with their labels:
+
+| Label | `security_mode` | Reports | An update needs |
+| --- | --- | --- | --- |
+| Signed | `SIMPLEOTA_SECURITY_SIGNED` | `"security_mode":"signed"` | An image signature that verifies against a pinned key |
+| Strict signing | `SIMPLEOTA_SECURITY_STRICT` | `"security_mode":"signed"` and `"require_manifest":true` | That, and a strict signature that verifies |
+
+Basic (`SIMPLEOTA_SECURITY_BASIC`) checks the SHA-256 only. On the wire strict signing is signed mode plus `require_manifest`, so it matches `signed` artifacts as in the table below, and the server offers it only builds that carry a strict signature.
+
+```cpp
+cfg.security_mode = SIMPLEOTA_SECURITY_STRICT;
+cfg.signing_keys = kSigningKeys;
+cfg.num_signing_keys = 1;
+cfg.project_id = "your-project-uuid";   // init fails until this is your project's UUID
+```
+
+- `project_id` is the project's UUID, lowercase with hyphens, as the CLI's key snippet prints it, not the project's slug. It is not a secret. `simpleota_init()` returns `ESP_ERR_INVALID_ARG` for a non-empty value in any other form, and for strict signing without a `project_id` or without a key.
+- In strict signing, an offer with no strict signature, or one that does not verify (made for another project, another build number, another image or another key id), is refused before the download: `simpleota_apply()` returns `SIMPLEOTA_SIGNATURE_FAIL` and the server gets `failed` with `signature_invalid`. The image signature is still checked during the download, as in signed mode.
+- **Rehearsing:** with `project_id` and a key pinned, a device in any mode checks a strict signature when the offer carries one, and refuses a wrong one. A fleet on signed mode can prove its strict signatures this way before it moves to strict signing. This is not the protection: outside strict signing a server can leave the strict signature out, and the update is taken on its image signature as before. Without `project_id`, strict signatures are not looked at.
+- Only builds the CLI has made strict-ready carry a strict signature. Move a fleet to strict signing once its builds do, with one last signed build whose code sets `SIMPLEOTA_SECURITY_STRICT` and `project_id`.
+
+The strict signature is checked with a second verifier, on the heap for a moment (about 700 bytes) and freed before the download starts. See `examples/StrictOTA`.
 
 #### Scope: this is not Secure Boot
 
@@ -470,7 +515,7 @@ For mixed schemes in one fleet, set [`partition_profile`](https://wassie-dev.git
 
 ## Footprint
 
-The default TLS trust links Arduino-ESP32's certificate bundle. BasicOTA for the ESP32 is 63,792 bytes larger than with 1.0.0 on Arduino-ESP32 2.0.17, and 68,820 bytes larger on 3.3.0, about the size of the bundle. The library uses `esp_http_client`, not `HTTPClient`, so a sketch that also uses `HTTPClient` links both HTTP stacks, about 23 KB more than it would with one. mbedTLS is shared.
+The default TLS trust links Arduino-ESP32's certificate bundle. BasicOTA for the ESP32 is 63,792 bytes larger than with 1.0.0 on Arduino-ESP32 2.0.17, and 68,820 bytes larger on 3.3.0, about the size of the bundle. 1.2.0 adds about 1.5 KB to BasicOTA over 1.0.1 (1,500 bytes on the ESP32, 1,626 on the ESP32-C6, Arduino-ESP32 3.3.0). Building with `-DSIMPLEOTA_DISABLE_SIGNED_UPDATES` leaves the Ed25519 verifier out: BasicOTA for the ESP32 is 14,552 bytes smaller. The library uses `esp_http_client`, not `HTTPClient`, so a sketch that also uses `HTTPClient` links both HTTP stacks, about 23 KB more than it would with one. mbedTLS is shared.
 
 ---
 
@@ -498,7 +543,8 @@ The default TLS trust links Arduino-ESP32's certificate bundle. BasicOTA for the
 | A sketch flashed over USB is replaced by the server's release | Expected: the device reports build 0 for an image SimpleOTA did not install. Only if you flash release images over USB, see [When to set `image_build`](#when-to-set-image_build). |
 | `simpleota_apply()` returns `SIMPLEOTA_DOWNGRADE` | The server offered a build that is not above the one the device runs. To go back, upload the old code again as a new build. |
 | Download stalls or times out | Weak Wi-Fi signal, or `CONFIG_SIMPLEOTA_HTTP_TIMEOUT_MS` is too short for the link. Increase the timeout or improve signal quality. |
-| `simpleota_init()` returns `ESP_ERR_INVALID_ARG` | A missing token or one with control characters, a `base_url` that is not `https://`, a signing key that does not parse, or `SIMPLEOTA_SECURITY_SIGNED` without a signing key. The log says which. |
+| `simpleota_init()` returns `ESP_ERR_INVALID_ARG` | A missing token or one with control characters, a `base_url` that is not `https://`, a signing key that does not parse or whose key id is over 64 characters, `SIMPLEOTA_SECURITY_SIGNED` or `SIMPLEOTA_SECURITY_STRICT` without a signing key, `SIMPLEOTA_SECURITY_STRICT` without a `project_id`, a `project_id` that is not a lowercase hyphenated UUID, or a signing key or signed mode in a build with `SIMPLEOTA_DISABLE_SIGNED_UPDATES`. The log says which. |
+| Strict signing refuses every update with `signature_invalid` | The build has no strict signature (the CLI makes one), or `project_id` is not this project's UUID. The log says whether the offer had no strict signature or it did not verify. |
 
 ---
 

@@ -1,7 +1,10 @@
 # Automatic release workflow.
 #
-# Trigger: after the CI workflow completes successfully on main.
-# Skips entirely if CI failed; broken builds are never tagged.
+# Trigger: after the CI workflow completes successfully for a push to main
+# of this repository. Skips entirely if CI failed, so broken builds are never
+# tagged, and skips CI runs from pull requests, including forks with a main
+# branch. Reads the version from, tags and releases the exact commit that
+# CI tested, not the latest commit on main.
 #
 # What it does:
 #   1. Reads the version from library.properties.
@@ -29,14 +32,17 @@ jobs:
   release:
     name: Tag and release
     runs-on: ubuntu-latest
-    # Only proceed if CI passed; don't tag a broken build.
-    if: github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     permissions:
       contents: write   # needed to create tags and releases
 
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0   # full history needed for release-notes generation
 
       - name: Read version from library.properties
@@ -61,4 +67,5 @@ jobs:
         with:
           tag_name: ${{ steps.lib.outputs.tag }}
           name: ${{ steps.lib.outputs.tag }}
+          target_commitish: ${{ github.event.workflow_run.head_sha }}
           generate_release_notes: true   # auto-generates notes from commits/PRs
